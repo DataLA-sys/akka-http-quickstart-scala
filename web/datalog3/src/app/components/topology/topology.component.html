@@ -1,0 +1,73 @@
+<mat-toolbar>
+  <span>Data topology</span>
+  <button mat-icon-button aria-label="Refresh topology" (click)="ngOnInit()">
+    <mat-icon>refresh</mat-icon>
+  </button>
+  <button mat-icon-button aria-label="Zoom to fit" (click)="zoomToFit()">
+    <mat-icon>fit_screen</mat-icon>
+  </button>
+  <button mat-icon-button aria-label="Zoom to fit" (click)="showSourceCode()" *ngIf="selected != null">
+    <mat-icon>description</mat-icon>
+  </button>  
+  <button mat-icon-button aria-label="Save" (click)="saveGraph()">
+    <mat-icon>save</mat-icon>
+  </button>    
+  <mat-form-field appearance="fill">
+    <mat-select [(value)]="selectedProject" disableRipple (selectionChange)="onWriterChange($event)">
+      <mat-option *ngFor="All" [value]=null></mat-option>
+      <mat-option *ngFor="let project of projects" [value]="project">
+        {{project}}
+      </mat-option>
+    </mat-select>
+  </mat-form-field>  
+</mat-toolbar>
+
+<mat-tab-group>
+  <mat-tab label="Topology">
+    <ngx-graph
+      [view]="[1500, 2500]"
+      layout="dagreCluster"
+      [links]="links"
+      [nodes]="nodes"
+      [clusters]="clusters"
+      [showMiniMap]="true"
+      [zoomToFit$]="zoomToFit$"
+    >
+    <ng-template #nodeTemplate let-node>
+        <svg:g class="node-group ng-star-inserted">
+    <!--        <circle r="10" cx="10" cy="10" class="ng-star-inserted" fill="#a95963"></circle> -->
+            <image [attr.href]="node.data.image" height="40" width="40" fill="none" (click)="nodeClick(node)" fill="#a95963"/>
+            <ng-container *ngIf="checkIfSelected(node)">
+              <image href="./assets/check.svg" height="40" width="40" fill="none" fill="#a95963"/>
+            </ng-container>
+            <text class="name">{{ node.label }}</text>
+        </svg:g>
+    </ng-template>
+    
+    <ng-template #clusterTemplate let-cluster>
+      <svg:g class="node cluster">
+        <image [attr.href]="cluster.data.image" height="100" width="100" fill="none"/>
+        <svg:rect
+          rx="5"
+          ry="5"
+          [attr.width]="cluster.dimension.width"
+          [attr.height]="cluster.dimension.height"
+          [attr.fill]="cluster.data.color"
+        />
+      </svg:g>
+    </ng-template>    
+    </ngx-graph>    
+  </mat-tab>
+  <mat-tab label="Source code">
+    <ace-editor
+    [(text)]="codeValue"
+    #editor style="height:600px;">
+    </ace-editor>    
+  </mat-tab>
+  <mat-tab label="Projects files">
+    <files-tree [filesTree]="topology.projectFiles"></files-tree>
+  </mat-tab>
+  <mat-tab label="Templates">
+    <tepmlate-editor (topologyParsedEvent)="getData($event)"></tepmlate-editor>
+  </mat-tab>  
+</mat-tab-group>

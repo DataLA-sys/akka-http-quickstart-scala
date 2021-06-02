@@ -1,0 +1,16 @@
+<button mat-icon-button aria-label="Save template" (click)="save()">
+    <mat-icon>save</mat-icon>
+</button>
+<button mat-icon-button aria-label="Save template" (click)="renderTemplate()">
+  <mat-icon>cake</mat-icon>
+</button>
+<button mat-icon-button aria-label="Set data" (click)="setData()">
+  <mat-icon>autorenew</mat-icon>
+</button>
+
+<input type="text" [(ngModel)]="fileName">
+
+<ace-editor
+[(text)]="fileContent"
+ #templateEditor style="height:600px;">
+</ace-editor>

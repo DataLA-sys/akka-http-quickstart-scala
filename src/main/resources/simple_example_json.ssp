@@ -1,0 +1,99 @@
+<%
+import org.json4s._
+import org.json4s.jackson.JsonMethods._
+case class Step2(destTable: String, fieldName: String, isArray: Boolean, jsonsql: String) {
+	def this(destTable: String, fieldName: String,  jsonsql: String) = this(destTable, fieldName, false,  jsonsql)
+	def this(destTable: String, fieldName: String) = this(destTable, fieldName, false,  null)
+}
+case class Step2Custom(jsonsql: Option[String], destTable: Option[String], fieldName: Option[String], udf: Option[String])
+case class Xml(xmlField: Option[String], ns: Option[String], sql: Option[String], destTable: Option[String])
+
+case class Table(destTable: String, jsonsql: String, code: Option[String], disabled: Boolean,
+	step2: List[Step2] = List(),
+	xml: List[Xml] = List(),
+	step2_custom: List[Step2Custom] = List())
+
+case class Tables(tables: List[Table])
+%>
+<%@ val data: JValue%>
+<%@ val project: String%>
+<%@ val sourceFile: String%>
+<%
+implicit val formats = DefaultFormats + FieldSerializer[Step2]()
+val tables: Tables = data.extract[Tables]
+%>
+{
+"datasets":
+	[
+	#for (i <- 0 to tables.tables.size - 1)
+		{
+			"name": "${tables.tables(i).destTable}",
+			"layer": "DataMart",
+			"project": "${project}",
+			"sourceFile": "${sourceFile}",
+			"in": [
+			#if(project == "Oliver_Wyman")
+				{
+					#if (tables.tables(i).destTable == "showcase_errors_backend")
+						"name": "ow_ow_prod_data_errors",
+						#elseif (tables.tables(i).destTable == "showcase_requests")
+						"name": "ow_ow_prod_data_requests",
+						#elseif (tables.tables(i).destTable == "showcase_request_items_input")
+						"name": "ow_ow_prod_data_request_items",
+						#elseif (tables.tables(i).destTable == "showcase_request_items_output")
+						"name": "ow_ow_prod_data_request_items",
+					#else
+						"name": "ow_ow_prod_data_source_processing",
+					#end
+
+					"layer": "Raw",
+					"project": "${project}",
+					"sourceFile": "${sourceFile}",
+					"in": [{"name": "source_processing","layer": "External", "project": "Oliver_Wyman", "sourceFile": "${sourceFile}"}]
+				}
+			#end
+			#if(project == "Connector_data")
+				{"name": "credreg_alfacre_connector_data", "layer": "Raw", "project": "Connector_data", "sourceFile": "${sourceFile}"},
+				{"name": "cr_source2_connector_data", "layer": "Raw", "project": "Connector_data", "sourceFile": "${sourceFile}"}
+			#end
+			],
+			"out": [
+				<%
+				val s2count = tables.tables(i).step2.size + tables.tables(i).step2_custom.size + tables.tables(i).xml.size
+				var s2idx = 1
+				%>
+				#for (j <- 0 to tables.tables(i).step2.size - 1)
+				{
+					"name": "${tables.tables(i).step2(j).destTable}",
+					"layer": "DataMart",
+					"project": "${project}",
+					"sourceFile": "${sourceFile}"
+				}
+				#if (s2idx != s2count), #end
+				<% s2idx += 1 %>
+				#end
+				#for (jj <- 0 to tables.tables(i).step2_custom.size - 1)
+					{
+					"name": "${tables.tables(i).step2_custom(jj).destTable}",
+					"layer": "DataMart",
+					"project": "${project}",
+					"sourceFile": "${sourceFile}"
+					}
+					#if (s2idx != s2count) , #end
+					<% s2idx += 1 %>
+				#end
+				#for (j <- 0 to tables.tables(i).xml.size - 1)
+				{
+					"name": "${tables.tables(i).xml(j).destTable.getOrElse(tables.tables(i).destTable + "_" + tables.tables(i).xml(j).xmlField.get)}",
+					"layer": "DataMart",
+					"project": "${project}",
+					"sourceFile": "${sourceFile}"
+				}
+				#if (s2idx != s2count) , #end
+				<% s2idx += 1 %>
+				#end
+			]
+		}#if(i != tables.tables.size - 1) , #end
+	#end
+	]
+}

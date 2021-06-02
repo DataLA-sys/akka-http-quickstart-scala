@@ -1,0 +1,91 @@
+{
+"tables": [
+	{"disabled": true, "jsonsql": "pravo.sql", 
+         "destTable": "showcase_pravo", "code": "PRAVO",
+         "step2": [{
+           "jsonsql": "step2common.sql", 
+           "destTable": "showcase_pravolevel2_searchcasearbitr",
+           "isArray": false, 
+           "fieldName": "response_json_clob.searchcasearbitr"}]
+        },
+	{"disabled": false, "jsonsql": "common_for_xml.sql", 
+         "destTable": "showcase_spark", "code": "SPARK",
+          "xml": [
+             {"xmlField": "response_json_clob.tenders", "ns": "soap", "sql": "extractXmlSparkTenders.sql"},
+             {"xmlField": "response_json_clob.risk_factors", "ns": "soap"},
+             {"xmlField": "response_json_clob.company_status", "ns": "soap"},
+             {"xmlField": "response_json_clob.entrepreneur_status", "ns": "soap", "sql": "extractXmlSparkEntrepreneurStatus.sql"}
+          ]
+        },
+	{"disabled": true, "jsonsql": "common_for_xml.sql", 
+         "destTable": "showcase_bias", "code": "BIAS",
+          "xml": [
+             {"xmlField": "response_json_clob.get_fssp", "ns": "soap"}
+          ]
+        },
+	{"disabled": true, "jsonsql": "common_for_xml.sql", 
+         "destTable": "showcase_beeline2", "code": "BEELINE", 
+         "xml": [
+             {"xmlField": "response_json_clob.getscore", 
+              "ns": "env", "explode": true}]
+        },
+	{"disabled": true, "jsonsql": "common.sql", 
+         "destTable": "showcase_1of", "code": "1OF"},
+	{"disabled": true, "jsonsql": "common_for_xml.sql", 
+         "destTable": "showcase_2gis", "code": "2GIS", 
+         "step2": [{
+          "jsonsql": "2gislevel2.sql", 
+          "destTable": "showcase_2gis_level2", 
+          "fieldName": "response_json_clob.GetBranchesByINN"}]},
+	{"disabled": true, "jsonsql": "common_for_xml.sql", 
+         "destTable": "showcase_atol", "code": "ATOL", 
+          "addWhere": "response_json_clob not like '%Function host is not running.%'", 
+          "step2": [{
+           "jsonsql": "step2common.sql", 
+           "destTable": "showcase_atol_level2", 
+           "fieldName": "response_json_clob.GetScoringByINN"}]},
+	{"disabled": true, "jsonsql": "common_array.sql", 
+         "destTable": "showcase_csv_monitor_ved__", "code": "CSV"},
+	{"disabled": true, "jsonsql": "common_evotor.sql", 
+         "destTable": "showcase_evotor", "code": "EVOTOR"},
+	{"disabled": true, "jsonsql": "common.sql", 
+         "destTable": "showcase_mailru", "code": "MAILRU"},
+	{"disabled": true, "jsonsql": "nebo.sql", 
+         "destTable": "showcase_nebo", "code": "NEBO", "msck": false},
+	{"disabled": true, "jsonsql": "common_for_xml.sql", 
+         "destTable": "showcase_ofdya", "code": "OFDYA",
+"addWhere": "response_json_clob not like '%example_response%'",        
+         "step2": [{
+           "jsonsql": "step2common.sql", 
+           "destTable": "showcase_ofdya_l_2",
+           "isArray": false, 
+           "fieldName": "response_json_clob.data"}]},
+	{"disabled": true, "jsonsql": "common_for_xml.sql", 
+         "destTable": "showcase_taxcom", "code": "TAXCOM"},
+	{"disabled": true, "jsonsql": "geointellect.sql", 
+         "destTable": "showcase_geointellect", "code": "GEOINTELLECT"},
+	{"disabled": true, "jsonsql": "common_array.sql", 
+         "destTable": "showcase_syn", "code": "SYN"},
+	{"disabled": true, "jsonsql": "load_errors.sql", 
+         "destTable": "showcase_errors_backend",
+          "step2": [
+        {"jsonsql": "load_errors_data_by_source.sql", 
+          "destTable": "showcase_errors_data_by_source", 
+          "fieldName": "internal_message.initial_request.data_by_source"}
+		  ],
+		  "step2_custom": [
+		{"jsonsql": "load_errors_data_by_source_nebo.sql", 
+          "destTable": "showcase_errors_data_by_source_nebo", 
+          "fieldName": "internal_message.initial_request.data_by_source",
+		  "udf": "nebo"},
+		{"jsonsql": "load_errors_data_by_source_beeline_mailru.sql", 
+          "destTable": "showcase_errors_data_by_source_beeline_mailru", 
+          "fieldName": "internal_message.initial_request.data_by_source",
+		  "udf": "phone"}
+		  ]},
+	{"disabled": true, "jsonsql": "load_requests.sql", 
+	 "destTable": "showcase_requests"},
+	{"disabled": true, "jsonsql": "load_request_items_input.sql", 
+	 "destTable": "showcase_request_items_input"},
+	{"disabled": true, "jsonsql": "load_request_items_output.sql", 
+	 "destTable": "showcase_request_items_output"}]}

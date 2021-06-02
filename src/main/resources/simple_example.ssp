@@ -1,0 +1,72 @@
+<%
+import org.json4s._
+import org.json4s.jackson.JsonMethods._
+case class Step2(destTable: String, fieldName: String, isArray: Boolean, jsonsql: String)
+case class Xml(xmlField: String, ns: String, sql: String)
+case class Table(destTable: String, jsonsql: String, code: Option[String], disabled: Boolean, step2: Option[List[Step2]], xml: Option[List[Xml]])
+case class Tables(tables: List[Table])
+%>
+<%@ val data: JValue%>
+<%
+implicit val formats = DefaultFormats
+val tables = data.extract[Tables] 
+%>
+{
+"datasets":
+	[
+	#for (i <- 0 to tables.tables.size - 1)
+		{
+			"name": "${tables.tables(i).destTable}",
+			"layer": "DataMart",
+			"in": [
+				{
+					"name": "source_processing",
+					"layer": "Raw",
+					"in": [
+						{
+							"name": "source_processing",
+							"layer": "External"							
+						}
+					]
+				}
+			],
+			"out": [
+				#for (j <- 0 to tables.tables(i).step2.size - 1)
+				{
+					"name": "${tables.tables(i).destTable}_${tables.tables(i).step2.get(j).fieldName}",
+					"layer": "DataMart"
+				},
+				#end
+				#for (j <- 0 to tables.tables(i).xml.size - 1)
+				{
+					"name": "${tables.tables(i).destTable}_${tables.tables(i).xml.get(j).xmlField}",
+					"layer": "DataMart"
+				},
+				#end				
+			]
+		},
+	#end
+	]
+}
+<table>
+#for (i <- 1 to tables.tables.size)
+  <tr>
+  	<td>${tables.tables(i-1).destTable}</td>
+  	<td>${tables.tables(i-1).jsonsql}</td>
+  	<td>${tables.tables(i-1).code}</td>
+  	<td>${tables.tables(i-1).disabled}</td>
+  	<td>
+  		#if(tables.tables(i-1).step2.isDefined)
+  		<table>  			
+  			#for (j <- 0 to tables.tables(i-1).step2.size - 1)
+  			<tr>
+  				<td>${tables.tables(i-1).destTable}.${tables.tables(i-1).step2.get(j).fieldName}</td>
+  				<td>${tables.tables(i-1).step2.get(j).destTable}</td>  				  				
+  			</tr>
+  			#end
+  		</table>
+  		#end
+  	<td>
+  </tr>
+#end
+</table>

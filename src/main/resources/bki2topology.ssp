@@ -1,0 +1,158 @@
+<%
+import org.json4s._
+import org.json4s.jackson.JsonMethods._
+
+import org.json4s.{DefaultFormats, JNothing}
+import org.json4s.jackson.JsonMethods.{compact, parse}
+import org.json4s.jackson.{JsonMethods}
+import org.json4s.jackson.Serialization.{read}
+
+import scala.collection.mutable.ListBuffer
+import scala.io.Source.fromFile
+import scala.xml._
+%>
+<%@ val data: JValue%>
+<%
+val v = data
+val tables = v \ "tables"
+case class FileDictionary(name: String = null, path: String = null)
+case class Table(name: Option[String], sql: String = "",
+	regViews: List[FileDictionary] = List(),
+	csvDicts: List[FileDictionary] = List(),
+	inTables: List[String] = List())
+val bkiTablesBuffer = new ListBuffer[Table]()
+val list = tables.values.asInstanceOf[Map[String, Map[String, _]]]
+implicit val formats = DefaultFormats
+list.keySet.foreach(s => {
+	val tableJ = v \ "tables" \ s
+	val table = read[Table](compact(JsonMethods.render(tableJ)))
+
+	val regViews = v \ "tables" \ s \ "reg_views"
+	val regViewsBuffer = new ListBuffer[FileDictionary]()
+	if(regViews != JNothing) {
+		val regViewlist = regViews.values.asInstanceOf[Map[String, Map[String, _]]]
+		regViewlist.keySet.foreach(ss => {
+			val regViewJ = v \ "tables" \ s \ "reg_views" \ ss
+			val regView = FileDictionary(ss, regViewJ.values.toString)
+			regViewsBuffer += regView
+		})
+	}
+
+	val dicts = v \ "tables" \ s \ "csv_dicts"
+	val dictBuffer = new ListBuffer[FileDictionary]()
+	if(dicts != JNothing) {
+		val dlist = dicts.values.asInstanceOf[Map[String, Map[String, _]]]
+		dlist.keySet.foreach(ss => {
+			val dJ = v \ "tables" \ s \ "reg_views" \ ss
+			val d = FileDictionary(ss, dJ.values.toString)
+			dictBuffer += d
+		})
+	}
+	val pathToSql = "c:\\a\\sql"
+	val linkBuffer = new ListBuffer[String]()
+	if(s == "person_request_bki_rb") {
+		linkBuffer += "l_hdb_det.wsrm_log"
+		linkBuffer += "{source_db}.source_person_request_bki_rb"
+	}
+
+	Option(table.sql).filter(!_.isEmpty).flatMap(sql => {
+		val sqlFileLines = fromFile(pathToSql + "\\" + sql).getLines
+		sqlFileLines.filter(_.contains("from {source_db}")).foreach(line => {
+			val foundTableName = line.trim().replace("from {source_db}.", "").split(' ')(0)
+			val tableNames = new ListBuffer[String]()
+			if(!foundTableName.contains("{syscode}")) {
+				tableNames += foundTableName
+			} else {
+				tableNames += foundTableName.replace("{syscode}", "rb")
+				tableNames += foundTableName.replace("{syscode}", "mb")
+			}
+			tableNames.foreach(tableName => {
+				if(tableName != s) {
+					if(!linkBuffer.contains(tableName)) {
+						linkBuffer += tableName
+					}
+				}
+			})
+		})
+		val sqlText = fromFile(pathToSql + "\\" + sql).getLines.mkString
+		list.keySet.foreach(temp => {
+			if (sqlText.contains(temp)) {
+				if(temp != s) {
+					if(!linkBuffer.contains(temp)) {
+						linkBuffer += temp
+					}
+				}
+			}
+		})
+		None
+	})
+
+	val table2 = Table(Some(s), table.sql, regViewsBuffer.toList, dictBuffer.toList, linkBuffer.toList)
+	bkiTablesBuffer += table2
+})
+
+val xml = XML.loadFile("C:\\projects\\temp\\alfabank\\bki\\C5486674.Выгрузка данных в БД витрина данных рисков\\oozie_workflows\\ctl\\wf_ctl_export_imbr_cre_req_daily\\workflow.xml")
+val elist = (xml \\ "action").filter(a =>  (a \ "@name").toString().contains("wf_export_imbr_imbr_cre") )
+val etables = for {
+	a <- elist
+	p <- (a \\ "sub-workflow" \\ "configuration" \\ "property")
+	if (p \\ "name").map(_.text)(0) == "table_name"
+} yield ((a \ "@name").toString().replace("wf_export_imbr_", ""), (p \ "value").map(_.text)(0))
+
+val exportTables = etables.toList
+val bkiTables = bkiTablesBuffer.toList
+
+%>
+{
+"datasets":
+	[
+	#for (i <- 0 to bkiTables.size - 1)
+		{
+			"name": "${bkiTables(i).name}",
+			"layer": "DataMart",
+			"project": "BKI",
+			"in": [
+				#for (j <- 0 to bkiTables(i).regViews.size - 1)
+					{
+						"name": "${bkiTables(i).regViews(j).name}",
+						"layer": "Hive",
+						"project": "BKI",
+						"datasetType": "file",
+						"pathToData": "${bkiTables(i).regViews(j).path}"
+					}#if(j != bkiTables(i).regViews.size - 1), #elseif (bkiTables(i).csvDicts.size > 0), #elseif(bkiTables(i).inTables.size > 0), #end
+				#end
+				#for (j <- 0 to bkiTables(i).csvDicts.size - 1)
+					{
+					"name": "${bkiTables(i).csvDicts(j).name}",
+					"layer": "Hive",
+					"project": "BKI",
+					"datasetType": "file",
+					"pathToData": "${bkiTables(i).csvDicts(j).path}"
+					}#if(j != bkiTables(i).csvDicts.size - 1), #elseif (bkiTables(i).inTables.size > 0), #end
+				#end
+				#for (j <- 0 to bkiTables(i).inTables.size - 1)
+					{
+					"name": "${bkiTables(i).inTables(j)}",
+					"layer": "Hive",
+					"project": "BKI"
+					}#if(j != bkiTables(i).inTables.size - 1), #end
+				#end
+			]
+		},
+	#end
+	#for (j <- 0 to exportTables.size - 1)
+		{
+			"name": "${exportTables(j)._2}",
+			"layer": "External",
+			"project": "BKI",
+			"in": [
+				{
+					"name": "${exportTables(j)._1}",
+					"layer": "DataMart",
+					"project": "BKI"
+				}
+			]
+		}#if(j != exportTables.size - 1), #end
+	#end
+	]
+}
