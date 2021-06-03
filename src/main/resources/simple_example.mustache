@@ -1,64 +1,12 @@
-with
-d as (
+insert overwrite table odpp_acc.marketdata_t partition(bdate='${bdate}', branch='${branch}')
 select 
- t.transactionid
-,t.bookdate        as TransactionDate
-,da.contractid     as ContractID
-,da.accountID      as DebitAccountID
-,ca.accountID      as CreditAccountID
-,t.amount          as TransactionAmount
-,t.currency
-,t.bdate, t.branch
-from odpp.transactions t
-join odpp_acc.inaccount_t      da on da.bdate = t.bdate and da.branch = t.branch and da.key = t.debitid  
-  and nullif(t.expid_db, da.contractid) is null -- привязанные к сделкам проводки ODPP-629
-left join odpp_acc.inaccount_t ca on ca.bdate = t.bdate and ca.branch = t.branch and ca.key = t.creditid 
-  and ca.contractid = da.contractid -- условие на contractid необходимо для исключения дублей из за использования одого счёта в нескольких сделках
-where t.bdate = '${bdate}' and t.branch = '${branch}'   
-)  
-,c as (   
-select 
- t.transactionid 
-,t.bookdate        as TransactionDate
-,ca.contractid     as ContractID
-,da.accountID      as DebitAccountID
-,ca.accountID      as CreditAccountID
-,t.amount          as TransactionAmount
-,t.currency
-,t.bdate, t.branch
-from odpp.transactions t
-join odpp_acc.inaccount_t      ca on ca.bdate = t.bdate and ca.branch = t.branch and ca.key = t.creditid 
-  and nullif(t.expid_cr, ca.contractid) is null
-left join odpp_acc.inaccount_t da on da.bdate = t.bdate and da.branch = t.branch and da.key = t.debitid  
-  and da.contractid = ca.contractid
-where t.bdate = '${bdate}' and t.branch = '${branch}'
-)
-,x as (
-select * from d
-union
-select * from c
-)
-insert overwrite table odpp_acc.intransaction_t partition(bdate='${bdate}', branch='${branch}')
-select
- x.transactionid       as key
-,x.transactionid
-,case -- ODPP-659
-when ex.eventobject is not null then 15
-else 1
-end                    as transactiontypeid
-,x.transactiondate
-,x.contractid
-,e.eventid
-,x.debitaccountid
-,x.creditaccountid
-,x.transactionamount
-,case
-when x.currency = 'RUR' then 'RUB'
-else x.currency
-end                    as Currency
-from x
-join odpp_acc.inevent_t e on e.bdate = x.bdate and e.branch = x.branch and e.contractid = x.contractid 
-left join odpp.inevent_t_ext ex on ex.bdate = x.bdate and ex.branch = x.branch 
-  and ex.contractid = x.contractid and ex.eventobject = x.transactionID
-  and ex.eventtypeid = 19 -- = 'InterestAccrual', это условие тут обязательно необходимо, но по имени делать ограничение несколько сложнее
+row_number() over(order by t.baseccy) as marketdataid
+,t.bdate                    as marketdate
+,concat('Exch.', t.baseccy) as ccypair
+,t.fixing                   as exchangerate
+from odpp.exchangerate t
+where 1 = 1
+  and t.bdate = '${bdate}'
+  and t.baseCCY <> 'RUR'
+  and t.counterCCY = 'RUB'
 ;
