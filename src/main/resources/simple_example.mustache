@@ -1,17 +1,152 @@
-insert overwrite table odpp_acc.inclient_t partition(bdate='${bdate}', branch='${branch}')
-select c.key
-      ,case when c.sourceid = 'ABS' then c.sourcesubjectid else c.sourcesubjectid||'_'||c.sourceid end as ClientID
-      ,if(c.isnaturalperson = 0, 1, 0) as IsCommerical
-      ,c.shortname as PartyReference
-from odpp.subject_tmp c
+-- ODPP-872 - изменён расчёт флага дефолта (iss3)
+with 
+sil as (
+select 
+ cast(value as boolean) as isInitial
+,validFrom              as bdate
+,row_number() over (order by branch nulls last) as rn
+ from odpp_dict.settings
+where settings_key = 'acc_initial_loading'
+  and validFrom = DATE'${bdate}'
+  and nullif(branch,'${branch}') is null
+)
+,t as (
+select t.srcdealid                         as ContractID
+  ,case 
+     when t.productcategory = 'K2' then 
+       t.facilityid                        
+     else 
+       cast(null as string)
+   end                                 as CreditLineID
+  ,case
+     when substring(t.branch,1,1) = 'R'
+     then '2'
+     else '1'
+   end                                 as ProductSourceSystemRef
+  ,t.srcdealid                         as ContractReference
+  ,case when s.sourceid = 'ABS' then s.sourcesubjectid else concat(s.sourcesubjectid,'_',s.sourceid) end as ClientID          
+  ,coalesce(ap.productid, 20)          as ProductID
+  ,ac.balanceno                        as Acc2              
+  ,de.IFRSCategory                     as IFRSCategoryID -- ЕКПП
+  ,abs(coalesce(t.openamount, 0))      as Principal
+  ,coalesce(t.nonoverdueprincipal,0) * (-1.0) as Balance
+  ,case
+     when ac.currency = 'RUR' then 'RUB'
+     else ac.currency
+   end                                 as Currency          
+  ,case 
+    when et.eventtypename != 'Impairment' and e_imp.contractID is not null then '0' -- ODPP-688
+    else dd.dflt_all_f
+  end                                  as isS3
+  ,cast(null as date)                  as PastDueDate -- техническое поле, не заполняется
+  ,cast(null as decimal)               as PastDueAmount -- техническое поле, не заполняется
+  ,t.bdate                             as BalanceSheetDate
+  ,cast(null as string)                as Basis -- техническое поле, не заполняется             
+  ,t.rateType                          as InterestRateType
+  ,ett.accountingtype                  as AccountingEventType
+  ,t.interestRate                      as InterestRate -- TODO
+  ,de.isStraightLine                   as IsStraightLine -- ЕКПП
+  ,de.marketsign                       as MarketSign -- ЕКПП
+  ,t.opendate                          as OriginDate       
+  ,t.maturitydate                      as MaturityDate      
+  ,ma.fairValueRate                    as EffectiveYield -- в первом этапе не заполняется
+  ,coalesce(de.isobservedrate,1)       as IsObservedRate -- ЕКПП
+  ,e.eventid                           as EventID
+  ,t.bdate
+  ,t.branch
+from odpp.deal_tmp2 t
+join odpp.inevent_t_ext e on e.contractid = t.srcdealid and e.priority = 1 and e.bdate = t.bdate and e.branch = t.branch
+join odpp_dict.acceventtype  et on e.eventtypeid = et.eventtypeid and e.bdate between et.validFrom and et.validTo
+join ( -- TODO: add event_trigger.accountingtype to odpp.inevent_t_ext
+  select distinct ett.eventtype, ett.accountingtype
+    from odpp_dict.event_trigger ett
+   where 1 = 1
+     and '${bdate}' between ett.validfrom and coalesce(ett.validto, odpp.max_date())
+) ett on (et.eventtypename = ett.eventtype)
+join odpp.subject_tmp           s on (t.clientid = s.key and t.bdate = s.bdate and t.branch = s.branch)
+left join odpp_dict.accproduct ap on trim(upper(ap.producttype)) = trim(upper(e.productclass)) and e.bdate between ap.validFrom and ap.validTo
+join odpp.account_tmp          ac on (t.mainaccountid = ac.key and t.bdate = ac.bdate and t.branch = ac.branch)
+join odpp_dict.ga_product      ga on (substring(ac.accountno,1,5) = ga.ga2 and t.bdate between ga.validfrom and ga.validto)
+left join odpp.default_client  dd on  dd.clientid = t.clientid and dd.bdate = t.bdate and dd.branch = t.branch -- ODPP-872
+left join odpp.default_client pdd on pdd.clientid = t.clientid and pdd.bdate = DATE'${pbdate}' and pdd.branch = t.branch -- ODPP-692
+--left join odpp.default_deal    dd on dd.dealid = t.key and dd.bdate = t.bdate and dd.branch = t.branch
+--left join odpp.default_deal   pdd on pdd.dealid = t.key and pdd.bdate = DATE'${pbdate}' and pdd.branch = t.branch -- ODPP-692
+left join odpp.deal_ekpp_tmp   de on de.dealid = t.key and de.bdate = t.bdate and de.branch = t.branch 
+left join odpp.deal_ekpp_tmp  pde on pde.dealid = t.key and pde.bdate = DATE'${pbdate}' and pde.branch = t.branch -- ODPP-692
+left join odpp.man_attr        ma on ma.expid = t.srcdealid and ma.bdate = t.bdate and ma.branch = t.branch
+left join odpp.deal_acc_cost   dc on dc.branch = e.branch and dc.expid = e.contractid -- ODPP-531 
+left join odpp.inevent_t_ext e_imp on e_imp.contractid = t.srcdealid and e_imp.bdate = t.bdate and e_imp.branch = t.branch
+  and e_imp.eventtypeid = 5 -- Impairment WARN: single event for deal
+--left join odpp.deal_asset_balance_tmp ab on ab.dealid = t.key and ab.bdate=t.bdate and ab.branch=t.branch
 where 1 = 1
-  and c.bdate = '${bdate}'
-  and c.branch = '${branch}'
-  and exists (
-    select 1 from odpp_acc.incontract_t cc
-    where 1 = 1
-      and cc.bdate = c.bdate
-      and cc.branch = c.branch
-      and cc.clientid = case when c.sourceid = 'ABS' then c.sourcesubjectid else c.sourcesubjectid||'_'||c.sourceid end
+  and t.bdate = '${bdate}'
+  and t.branch = '${branch}'
+  and t.productcategory in ('K1','K2')
+  and t.maturitydate is not null
+  and
+  -- ODPP-253
+  ga.productclass in ('Loan','Interbank loan','Interbank deposit','Deposit','Credit Line','Credit line','Loan_Cession') and 
+  (
+    -- ODPP-692 - добавлены условия на предыдущую операционную дату
+    -- нерыночные условия (Default_Market_Flag/MarketSign = 0 (не в рынке));
+    coalesce(de.marketsign,1) = 0 or coalesce(pde.marketsign,1) = 0
+    or 
+    -- метод определения амортизированной стоимости (isStraightLine) = 0 (ЭПС);
+    coalesce(de.isStraightLine,1) = 0 or coalesce(pde.isStraightLine,1) = 0
+    or
+    -- на bdate имеется существенная комиссия/затраты, включаемые в ЭПС (остаток на счете по учету комиссий/затрат, привязанному к договору). 
+    -- При этом Критерий существенности – 1 млн. руб. Комиссии/ затраты не превышающие 1 млн. руб. признаются не существенными.
+    -- ODPP-531 критерии существенности рассчитываем отдельно
+    coalesce(if(dc.modified_bdate > t.bdate, dc.status_prev, dc.status), '0') = '1'
+    or
+    -- кредиты с флагом дефолта (iss3 = 1).
+    coalesce(dd.dflt_all_f,0) = 1 or coalesce(pdd.dflt_all_f,0) = 1
   )
+)
+insert overwrite table odpp_acc.incontract_t partition(bdate='${bdate}', branch='${branch}')
+select 
+ t.ContractID
+,t.CreditLineID
+,t.ProductSourceSystemRef
+,t.ContractReference
+,t.ClientID
+,t.ProductID
+,t.Acc2
+,t.IFRSCategoryID
+,case 
+when ce.ddcat = 'CE' and ce.dealTypeID = 'TXP' then -ce.offbalanceAmount -- ODPP-548 остаток приобретенного ОД
+when ce.ddcat = 'CE' then 0
+when sil.isInitial   then t.Balance
+else t.Principal
+end                as principal 
+,case 
+when ce.ddcat = 'CE' and ce.dealTypeID = 'TXP' then -ce.offbalanceAmount -- ODPP-548 остаток приобретенного ОД
+when ce.ddcat = 'CE' then 0
+else t.Balance
+end                as balance
+,t.Currency
+,t.isS3
+,t.PastDueDate
+,t.PastDueAmount
+,t.BalanceSheetDate
+,t.Basis
+,t.InterestRateType
+,case
+when sil.isInitial then 'InitialRecognition'
+else t.AccountingEventType
+end                as AccountingEventType
+,t.InterestRate
+,t.IsStraightLine
+,t.MarketSign
+,case
+when sil.isInitial then t.bdate
+else t.OriginDate
+end                as OriginDate
+,t.MaturityDate
+,t.EffectiveYield
+,t.IsObservedRate
+,t.EventID
+from t as t
+left join sil on sil.bdate = t.bdate and sil.rn = 1
+left join odpp.deal_tmp0 ce on ce.bdate=t.bdate and ce.branch=t.branch and ce.sourcedealid = t.contractID and ce.ddcat = 'CE' -- ODPP-548 остаток по цессям
 ;
