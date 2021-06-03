@@ -1,108 +1,41 @@
-with
-  settings as (
-    select 
-       settings_key
-      ,'${branch}' as branch
-      ,validFrom as bdate
-      ,row_number() over (order by branch nulls last) rn
-    from odpp_dict.settings
-    where settings_key = 'acc_initial_loading'
-      and nullif(branch,'${branch}') is null
-      and validFrom = DATE'${bdate}'
-  )
-insert overwrite table odpp.inevent_t_ext partition(bdate='${bdate}', branch='${branch}')
-select
-cast((date_format(e.bdate,'yyMMdd')||'01000000000') as bigint) + row_number() over(order by d.srcdealid)       as eventID
-,a.productclass
-,e.eventobject			as eventobject
-,e.eventtrigger			as eventtrigger
-,et.objecttype			as objecttype
-,row_number() over(partition by d.`key` order by EP.priority_group desc nulls last, EP.sub_priority asc nulls last, tr.valuedate desc nulls last) priority -- TODO: приоритет по времени транзакции - valueDate не подходит... 
-,aet.eventtypeid        as eventTypeID
-,d.srcdealid			as contractID
-,e.bdate				as eventDate
-,case
-    when length(e.branch) = 3 and substr(e.branch, 1, 1) = 'R'
-        then 2
-        else 1
-    end	        as coreSystemRef
-,coalesce(e.amount, 0)       as amount
-,case
-    when UPPER(aet.eventtypename) in ('PREPAYMENT', 'EARLYREPAYMENT', 'WRITEOFF') then '1'   
-    end                                                                                      as cashFlowTypeID
-,aet.IsRecomputeEY      as isRecomputeEY
-,null                   as impairedprincipalportion
-,null                   as impairedinterestportion
-,null                   as startProcessing
-,null                   as finishProcessing
-from odpp.events e
-left join settings sil on sil.bdate=e.bdate and sil.branch=e.branch and rn=1
-join odpp.deal_tmp2 d on e.dealid = d.key and d.bdate = e.bdate and d.branch = e.branch
-join odpp_dict.event_trigger et on e.eventtrigger = et.code
-join odpp_dict.acceventtype aet on et.eventtype = aet.eventtypename and e.bdate between aet.validFrom and aet.validTo
-left join odpp.deal_asset_acc_tmp a
-  on d.key = a.dealid
- and d.bdate = a.bdate
- and d.branch = a.branch
- and a.main = true
- and a.principal is not null
-left join odpp.deal_ekpp_tmp de
-  on de.dealid = d.key
- and de.bdate = d.bdate
- and de.branch = d.branch
-left join odpp.transactions TR
-  on TR.transactionid = e.eventobject
- and ET.objecttype = 'TX'
- and TR.bdate = e.bdate
- and TR.branch = e.branch
-left join odpp_dict.event_priority EP
-  on EP.acc2 = a.productclass
- and EP.event_type = et.eventtype
- and EP.ifrs9_category = de.ifrscategory
- and a.bdate between EP.validFrom and EP.validTo
-where 1=1
-  and sil.settings_key is null -- ODPP-451 - если это не инициирующая загрузка
-  and e.bdate = '${bdate}'
-  and e.branch = '${branch}'
-  and d.productcategory not in ('K4','K5')
-;
-
--- ODPP-451 - генерируем события для инициирующей загрузки по всем сделкам
 with 
-  settings as (
-    select 
-       settings_key
-      ,'${branch}' as branch
-      ,validFrom as bdate
-      ,row_number() over (order by branch nulls last) rn
-    from odpp_dict.settings
-    where settings_key = 'acc_initial_loading'
-      and nullif(branch,'${branch}') is null
-      and validFrom = DATE'${bdate}'
-  )
-insert into odpp.inevent_t_ext 
+eod as (
+select p.branch, p.bdate, max(t.bdate) as last_eom
+from (select DATE'${bdate}' as bdate, '${branch}' as branch) as p 
+join odpp_dict.clndr_bdate as t on t.branch = p.branch
+  and t.bdate > add_months(p.bdate,-2) and t.bdate < p.bdate
+  and t.eom
+group by p.branch, p.bdate
+)
+,deal as (
 select 
-  cast((date_format(t.bdate,'yyMMdd')||'01000000000') as bigint) + row_number() over(order by t.srcdealid) as eventid
- ,a.productclass
- ,t.srcdealid as eventobject
- ,null as eventtrigger 
- ,'DEAL' as objecttype -- в справочнике TX, но мы в eventobject ставим ID сделки, поэтому DEAL
- ,1 as priority 
- ,7 as eventtypeid
- ,t.srcdealid as contractid
- ,'${bdate}' as eventdate
- ,case
-    when length(t.branch) = 3 and substr(t.branch, 1, 1) = 'R'
-        then 2
-        else 1
-  end as coreSystemRef
- ,0 as amount
- ,null as cashflowtypeid
- ,aet.IsRecomputeEY as isRecomputeEY
- ,null as impairedprincipalportion
- ,null as impairedinterestportion
- ,null as strartprocessing
- ,null as finishprocessing
- ,t.bdate
- ,t.branch 
-from settings sil 
+ e.contractID, e.eventid, e.coreSystemRef, e.bdate, e.branch
+,max(coalesce(t.bdate,eod.last_eom)) last_bdate
+,max(t.bdate) last_bdate2
+ from eod
+ join odpp_acc.inevent_t e on e.bdate = eod.bdate and e.branch = eod.branch
+ left join odpp_acc.inevent_t t on t.branch = eod.branch and t.bdate >= eod.last_eom and t.bdate < eod.bdate and t.contractID = e.contractID
+ group by e.contractID, e.eventid, e.coreSystemRef, e.bdate, e.branch
+)
+,ias as (
+select 
+ t.contractID, t.eventid, t.coreSystemRef, t.bdate, t.branch
+,sum(p.iasinterest) iasSum
+from deal t
+left join odpp_pwc.outgroupreport p on p.expID = t.contractID and p.branch = t.branch 
+  and p.accountingtype='BS'
+  and p.bdate >= t.last_bdate
+  and p.bdate < t.bdate
+group by t.contractID, t.eventid, t.coreSystemRef, t.bdate, t.branch
+)
+insert overwrite table odpp_acc.incalcmeasure_t partition (bdate, branch)
+select
+ cast(concat(date_format(bdate,'yyMMdd'),'09000000000') as bigint) + row_number() over(order by contractID) as CalcID
+,eventid               as EventID
+,contractid            as ContractID
+,coreSystemRef         as CoreSystemRef
+,bdate                 as CalcDate
+,coalesce(iasSum,0)    as IASInterestAccrued
+,bdate, branch
+from ias t
+;
