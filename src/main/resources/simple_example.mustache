@@ -1,41 +1,40 @@
-with 
-eod as (
-select p.branch, p.bdate, max(t.bdate) as last_eom
-from (select DATE'${bdate}' as bdate, '${branch}' as branch) as p 
-join odpp_dict.clndr_bdate as t on t.branch = p.branch
-  and t.bdate > add_months(p.bdate,-2) and t.bdate < p.bdate
-  and t.eom
-group by p.branch, p.bdate
-)
-,deal as (
+insert overwrite table odpp_acc.inaccount_t partition(bdate='${bdate}', branch='${branch}')
 select 
- e.contractID, e.eventid, e.coreSystemRef, e.bdate, e.branch
-,max(coalesce(t.bdate,eod.last_eom)) last_bdate
-,max(t.bdate) last_bdate2
- from eod
- join odpp_acc.inevent_t e on e.bdate = eod.bdate and e.branch = eod.branch
- left join odpp_acc.inevent_t t on t.branch = eod.branch and t.bdate >= eod.last_eom and t.bdate < eod.bdate and t.contractID = e.contractID
- group by e.contractID, e.eventid, e.coreSystemRef, e.bdate, e.branch
-)
-,ias as (
-select 
- t.contractID, t.eventid, t.coreSystemRef, t.bdate, t.branch
-,sum(p.iasinterest) iasSum
-from deal t
-left join odpp_pwc.outgroupreport p on p.expID = t.contractID and p.branch = t.branch 
-  and p.accountingtype='BS'
-  and p.bdate >= t.last_bdate
-  and p.bdate < t.bdate
-group by t.contractID, t.eventid, t.coreSystemRef, t.bdate, t.branch
-)
-insert overwrite table odpp_acc.incalcmeasure_t partition (bdate, branch)
-select
- cast(concat(date_format(bdate,'yyMMdd'),'09000000000') as bigint) + row_number() over(order by contractID) as CalcID
-,eventid               as EventID
-,contractid            as ContractID
-,coreSystemRef         as CoreSystemRef
-,bdate                 as CalcDate
-,coalesce(iasSum,0)    as IASInterestAccrued
-,bdate, branch
-from ias t
+ a.key
+,a.sourceaccountid  as AccountID
+,t.contractID       as ContractID
+,a.accountno        as AccountReference
+,a.description      as AccountDescription
+,if(a.branch='0000', 1, 2)   as CoreSystemRef
+,case
+  when a.branch = '0000' then cast(null as string)
+  else substr(a.sourceaccountid, 1, 4)
+end as BISAB
+,case
+  when a.branch = '0000' then cast(null as string)
+  else substr(a.sourceaccountid, 5, 6)
+end as BISAN
+,case
+  when a.branch = '0000' then cast(null as string)
+  else substr(a.sourceaccountid, 11, 3)
+end as BISAS
+,case
+  when a.branch = '0000' then cast(null as string)
+  else a.sourceaccountid
+end as InternalSystemAccountID 
+,case
+  when a.branch = '0000' then cast(null as string)
+  else a.activetype
+end as InternalSystemAccountTypeID
+,case
+  when a.currency = 'RUR' then 'RUB'
+  else a.currency
+end as Currency
+,substr(a.accountno, 0, 5) as Account5
+from odpp_acc.inevent_t t
+join odpp.deal_tmp2 d on d.bdate = t.bdate and d.branch = t.branch and d.srcDealID = t.contractID
+join odpp.deal_asset_acc_tmp da on da.bdate = d.bdate and da.branch = d.branch and da.dealid = d.key
+join odpp.account_tmp a on a.bdate = da.bdate and a.branch = da.branch and a.key = da.accid
+where 1 = 1
+  and t.branch = '${branch}' and t.bdate = '${bdate}'
 ;
