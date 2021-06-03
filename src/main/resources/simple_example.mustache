@@ -1,40 +1,20 @@
-insert overwrite table odpp_acc.inaccount_t partition(bdate='${bdate}', branch='${branch}')
+insert overwrite table odpp_acc.inbalance_t partition(bdate='${bdate}', branch='${branch}')
 select 
- a.key
-,a.sourceaccountid  as AccountID
-,t.contractID       as ContractID
-,a.accountno        as AccountReference
-,a.description      as AccountDescription
-,if(a.branch='0000', 1, 2)   as CoreSystemRef
-,case
-  when a.branch = '0000' then cast(null as string)
-  else substr(a.sourceaccountid, 1, 4)
-end as BISAB
-,case
-  when a.branch = '0000' then cast(null as string)
-  else substr(a.sourceaccountid, 5, 6)
-end as BISAN
-,case
-  when a.branch = '0000' then cast(null as string)
-  else substr(a.sourceaccountid, 11, 3)
-end as BISAS
-,case
-  when a.branch = '0000' then cast(null as string)
-  else a.sourceaccountid
-end as InternalSystemAccountID 
-,case
-  when a.branch = '0000' then cast(null as string)
-  else a.activetype
-end as InternalSystemAccountTypeID
-,case
-  when a.currency = 'RUR' then 'RUB'
-  else a.currency
-end as Currency
-,substr(a.accountno, 0, 5) as Account5
-from odpp_acc.inevent_t t
-join odpp.deal_tmp2 d on d.bdate = t.bdate and d.branch = t.branch and d.srcDealID = t.contractID
-join odpp.deal_asset_acc_tmp da on da.bdate = d.bdate and da.branch = d.branch and da.dealid = d.key
-join odpp.account_tmp a on a.bdate = da.bdate and a.branch = da.branch and a.key = da.accid
-where 1 = 1
-  and t.branch = '${branch}' and t.bdate = '${bdate}'
+ concat(a.sourceaccountid,':',t.contractid,':',t.bdate)  
+                       as AccBalID
+,a.sourceaccountid     as AccountID
+,t.contractid          as ContractID
+,t.bdate               as BalanceSheetDate
+,-coalesce(da0.balance,0) as BalanceAmount -- исходящий остаток на bdate
+,-coalesce(da1.balance,0) as BalanceSheetDateAmount -- входящий остаток на bdate = исходящий остаток на prev bdate
+,t.eventid             as EventID
+,if(da0.currency='RUR', 'RUB', da0.currency) 
+                       as Currency
+  from odpp_acc.inevent_t t
+  join odpp.deal_tmp2 d on d.srcdealid = t.contractid and d.bdate = t.bdate and t.branch = t.branch
+  join odpp.deal_asset_acc_tmp da0 on da0.dealID = d.key and da0.bdate = t.bdate and da0.branch = t.branch
+  join odpp.account_tmp a on a.key = da0.accID and a.bdate = da0.bdate and a.branch = da0.branch
+  left join odpp.deal_asset_acc_tmp da1 on da1.dealID = da0.dealID and da1.accID = da0.accID and da1.bdate = DATE'${pbdate}' and da0.branch = t.branch
+where 1=1
+  and t.bdate = DATE'${bdate}' and t.branch = '${branch}'
 ;
