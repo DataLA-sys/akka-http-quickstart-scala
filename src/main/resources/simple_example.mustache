@@ -1,51 +1,21 @@
-insert overwrite table odpp_acc.increditline_t partition(bdate='${bdate}', branch='${branch}') 
---Добавление  сделок по кредитным линиям К3
-SELECT 
- t.srcdealid       as CreditLineID
-,t.srcdealid       as CreditLineNotation
-,if (t.currency = 'RUR','RUB',t.currency) as CreditLineCCY
-,t.opendate        as SignatureDate
-,t.maturitydate    as FacilityExpiryDate
-,coalesce(t.balanceequivalent, 0)  as CreditLineAmount -- ODPP-520
-,case 
-when t.isrevolving = '1' then 'RCL' 
-when t.isrevolving = '0' then 'NRCL'
-else cast(null as string)
-end                as CreditLineType
-from odpp.deal_tmp2 t
-join odpp.inevent_t_ext e on e.contractid = t.srcdealid and e.priority = 1 and e.bdate = t.bdate and e.branch = t.branch
-left join odpp.deal_acc_cost dc on dc.branch = e.branch and dc.expid = e.contractid -- ODPP-531 
-WHERE t.bdate = DATE'${bdate}' and t.branch = '${branch}'
-  and t.productcategory IN ('K3')
-  and t.maturitydate is not null 
--- ODPP-253 для кредитных линий проверяем только существенные затраты. productClass можно не проверять - тут только CreditLine
-and 
-(
-    -- на bdate имеется существенная комиссия/затраты, включаемые в ЭПС (остаток на счете по учету комиссий/затрат, привязанному к договору). 
-    -- При этом Критерий существенности – 1 млн. руб. Комиссии/ затраты не превышающие 1 млн. руб. признаются не существенными.
-    coalesce(if(dc.modified_bdate > t.bdate, dc.status_prev, dc.status), '0') = '1'
-)
-union
--- Добавление  сделок по траншам К2 
--- TODO: refactor конструкция с union какая-то стрёмная...
-SELECT 
- t.srcdealid       as CreditLineID
-,t.srcdealid       as CreditLineNotation
-,if (t.currency = 'RUR','RUB',t.currency) as CreditLineCCY
-,t.opendate        as SignatureDate
-,t.maturitydate    as FacilityExpiryDate
-,coalesce(t.balanceequivalent, 0)  as CreditLineAmount -- ODPP-520
-,case 
-  when t.isrevolving = '1' then 'RCL' 
-  when t.isrevolving = '0' then 'NRCL'
-  else cast(null as string)
-end                as CreditLineType
-from odpp.deal_tmp2 t
-where 1 = 1
-  and t.bdate = DATE'${bdate}' and t.branch = '${branch}'
-  and exists(
-   select * from odpp_acc.incontract_t d where d.bdate = t.bdate and d.branch = t.branch and d.creditlineid = t.srcdealid
+with 
+  deals as (
+    select contractid, bdate, branch from odpp_acc.incontract_t where bdate='${bdate}' and branch='${branch}'
+    union 
+    select creditlineid as contractid, bdate, branch from odpp_acc.increditline_t where bdate='${bdate}' and branch='${branch}'
   )
-  -- TODO: check странные условия - транш уже попал в inContract_t. оставил как было. но надо проверить...
-  and t.productcategory IN ('K3') and t.maturitydate is not null 
+insert overwrite table odpp_acc.inevent_t partition(bdate='${bdate}', branch='${branch}')
+select e.eventid
+      ,e.eventtypeid
+      ,e.contractid
+      ,e.eventdate
+      ,e.coresystemref
+      ,e.amount
+      ,e.cashflowtypeid
+      ,e.impairedprincipalportion
+      ,e.impairedinterestportion
+      ,e.strartprocessing
+      ,e.finishprocessing
+from deals d 
+join odpp.inevent_t_ext e on e.bdate=d.bdate and d.branch=e.branch and e.contractid = d.contractid and e.priority=1
 ;
