@@ -4,6 +4,7 @@ import akka.actor.typed.{ActorRef, ActorSystem}
 import com.example.actors._
 import akka.actor.typed.scaladsl.AskPattern._
 import akka.http.scaladsl.model.HttpMethods._
+import akka.http.scaladsl.model.StatusCodes.PermanentRedirect
 import akka.http.scaladsl.model.{HttpResponse, StatusCodes}
 import akka.http.scaladsl.model.headers.{`Access-Control-Allow-Credentials`, `Access-Control-Allow-Headers`, `Access-Control-Allow-Methods`, `Access-Control-Allow-Origin`}
 import akka.http.scaladsl.server.Directives.{complete, onSuccess, _}
@@ -68,6 +69,16 @@ class RenderRoutes(owConfigToTopologyActor: ActorRef[OwConfigToTopologyActor.Com
 
   def getJson(): Future[String] =  owConfigToTopologyActor.ask(OwConfigToTopologyActor.RenderIt(_))
 
+  def assets = {
+    def redirectSingleSlash =
+      pathSingleSlash {
+        get {
+          redirect("index.html", PermanentRedirect)
+        }
+      }
+    getFromResourceDirectory("web") ~ redirectSingleSlash
+  }
+
   def renderRoutes(): Route = {
     concat(
       get {
@@ -118,7 +129,8 @@ class RenderRoutes(owConfigToTopologyActor: ActorRef[OwConfigToTopologyActor.Com
             case JobRepository.KO(reason) => complete(StatusCodes.InternalServerError -> reason)
           }*/
         }
-      }
+      },
+      assets
     )
   }
 }
