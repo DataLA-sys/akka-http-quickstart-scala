@@ -1,110 +1,32 @@
-insert into odpp.events
-select 
-'ATTR_LSM' as eventTrigger
-,t1.key    as dealID 
-,t1.key    as eventObject
-,null      as amount
-,t1.bdate
-,t1.branch
-from odpp.deal_tmp2 t1
-join odpp.deal_tmp2 t0 on t0.key = t1.key 
-join odpp.deal_ekpp_tmp ek1 on (t1.key = ek1.dealid and t1.bdate = ek1.bdate and t1.branch = ek1.branch)
-join odpp.deal_ekpp_tmp ek0 on (t0.key = ek0.dealid and t0.bdate = ek0.bdate and t0.branch = ek0.branch)
-join odpp.subject_tmp s1 on (t1.clientid = s1.key and t1.bdate = s1.bdate and t1.branch = s1.branch)
-join odpp.subject_tmp s0 on (t0.clientid = s0.key and t0.bdate = s0.bdate and t0.branch = s0.branch)
-join odpp.account_tmp ac on (t1.mainaccountid = ac.key and t1.bdate = ac.bdate and t1.branch = ac.branch)
-join odpp_dict.ga_product g1 on ac.balanceno = g1.ga2 and t1.bdate between g1.validfrom and g1.validto
-where t1.bdate = DATE'${bdate}' and t1.branch = '${branch}'
-  and t0.bdate = DATE'${pbdate}' and t0.branch = '${branch}'
-  and t1.maturitydate != t1.bdate 
-  and g1.productclass in ('Loan', 'Loan_Cession', 'Interbank loan') 
-  and (t1.currency != t0.currency
-   or coalesce(t1.ratetype, '') != coalesce(t0.ratetype, '')
-   or s1.sourcesubjectid != s0.sourcesubjectid
-   or ek1.sppi != ek0.sppi
-  )
-union all
-select 
-'ATTR_DSM' as eventTrigger
-,t1.key    as dealID 
-,t1.key    as eventObject
-,null      as amount
-,t1.bdate
-,t1.branch
-from odpp.deal_tmp2 t1
-join odpp.deal_tmp2 t0 on t0.key = t1.key 
-join odpp.subject_tmp s1 on (t1.clientid = s1.key and t1.bdate = s1.bdate and t1.branch = s1.branch)
-join odpp.subject_tmp s0 on (t0.clientid = s0.key and t0.bdate = s0.bdate and t0.branch = s0.branch)
-join odpp.account_tmp ac on (t1.mainaccountid = ac.key and t1.bdate = ac.bdate and t1.branch = ac.branch)
-join odpp_dict.ga_product g1 on ac.balanceno = g1.ga2 and t1.bdate between g1.validfrom and g1.validto
-where t1.bdate = DATE'${bdate}' and t1.branch = '${branch}'
-  and t0.bdate = DATE'${pbdate}' and t0.branch = '${branch}'
-  and t1.maturitydate != t1.bdate 
-  and g1.productclass in ('Deposit', 'Interbank deposit') 
-  and (t1.currency != t0.currency
-   or coalesce(t1.ratetype, '') != coalesce(t0.ratetype, '')
-   or s1.sourcesubjectid != s0.sourcesubjectid
-  )
-union all
-select 
-'ATTR_EXPID' as eventTrigger
-,t1.key    as dealID 
-,t1.key    as eventObject
-,null      as amount
-,t1.bdate
-,t1.branch
-from odpp.deal_tmp2 t1
-join odpp.deal_tmp2 t0 on t0.key = t1.key 
-join odpp.account_tmp ac on (t1.mainaccountid = ac.key and t1.bdate = ac.bdate and t1.branch = ac.branch)
-join odpp_dict.ga_product g1 on ac.balanceno = g1.ga2 and t1.bdate between g1.validfrom and g1.validto
-where t1.bdate = DATE'${bdate}' and t1.branch = '${branch}'
-  and t0.bdate = DATE'${pbdate}' and t0.branch = '${branch}'
-  and t1.maturitydate != t1.bdate 
-  and g1.productclass in ('Loan', 
-  						  'Credit line', 
-  						  'Loan_Cession', 
-  						  'Interbank loan', 
-  						  'Deposit', 
-  						  'Interbank deposit', 
-  						  'Guaranties', 
-  						  'Accounts (due from)', 
-  						  'L/C', 
-  						  'Other assets') 
-  and t1.srcdealid != t0.srcdealid
-;
-
--- ValueNotional
-
-with t1 as (  
-select t1.dealid, sum(hash(t1.duedate, t1.currency, t1.amount, t1.typeid)+hash(t1.currency, t1.duedate, t1.typeid, t1.amount)) as txx
-from odpp.cashflow t1
-where 1=1
-  and t1.bdate = DATE'${bdate}' 
-  and t1.branch = '${branch}'
-  and t1.duedate >= t1.bdate
-group by t1.dealid
-),
+with
 t0 as (
-select pt.dealid, sum(hash(pt.duedate, pt.currency, pt.amount, pt.typeid)+hash(pt.currency, pt.duedate, pt.typeid, pt.amount)) as pxx
-from odpp.cashflow pt
-where 1=1
-  and pt.bdate = DATE'${pbdate}'
-  and pt.branch = '${branch}'
-  and pt.duedate >= DATE'${bdate}'
-group by pt.dealid
+select
+ rc.client_id
+,rc.bdate
+,rc.branch
+,r.rctid        as ATTR_RCT
+,r.ir           as ATTR_IRT
+,r.wlstat       as ATTR_WLS
+,if(substr(upper(r.edu),1,4) = 'IBFS', '1', '') as ATTR_EDU
+from odpp.rct_client rc
+join odpp.rct r on r.bdate = rc.bdate and r.branch = rc.branch and r.rctid = rc.rct_id and r.clid_rn = 1
+where rc.bdate in (DATE'${pbdate}',DATE'${bdate}') and rc.branch = '${branch}' and rc.client_rn = 1
+)
+,t1 as (
+select client_id, bdate, branch, attr, value
+from t0 lateral view explode(map('ATTR_RCT', ATTR_RCT, 'ATTR_IRT', ATTR_IRT, 'ATTR_WLS', ATTR_WLS, 'ATTR_EDU', ATTR_EDU)) upv as attr, value
 )
 insert into odpp.events
-select 
- 'VN' eventTrigger
-,coalesce(t1.dealid, t0.dealid)  as dealid
-,coalesce(t1.dealid, t0.dealid)  as eventObject
-,null                            as amount
-,DATE'${bdate}'                  as bdate
-,'${branch}'                     as branch 
-from t1
-full join t0 on t0.dealid = t1.dealid 
-where 1=1
-  and coalesce(t0.pxx, 0) != coalesce(t1.txx, 0)
+select
+ c.attr     as eventTrigger
+,d.key      as dealID
+,d.clientid as eventObject
+,null       as amount
+,c.bdate
+,c.branch
+from t1 as c
+left join t1 pc on pc.client_id = c.client_id and pc.attr = c.attr and pc.branch = c.branch and pc.bdate = DATE'${pbdate}'
+join odpp.deal_tmp2 d on d.clientid = c.client_id and d.branch = c.branch and d.bdate = c.bdate
+where c.bdate = DATE'${bdate}'
+and coalesce(c.value,'') != coalesce(pc.value, '')
 ;
-
-
