@@ -1,32 +1,103 @@
+-- Derecognition / EarlyRepayment 
+
+-- Loan
 insert into odpp.events
-select 'ATTR_DEFBUC'	   eventTrigger
-       ,DEF_DEALS_B.dealid dealid
-       ,DEF_DEALS_B.dealid eventobject
-       ,null               amount
-       ,DATE '${bdate}'	   bdate
-       ,'${branch}'		   branch
-from
-  (
-	select DDT.dealid,
-		   DB.id default_bucket_id
-	from odpp.default_deal DDT
-	   join odpp_dict.default_bucket DB
-	      on datediff(DDT.bdate, DDT.dflt_cl_dt) BETWEEN DB.day_from and nvl(DB.day_to, datediff(DDT.bdate, DDT.dflt_cl_dt))
-   	     and DDT.bdate between DB.validFrom and DB.validTo
-	where DDT.bdate = DATE '${bdate}'
-	  and DDT.branch = '${branch}'
-  ) DEF_DEALS_B
-  join
-  (
-	select DDT.dealid,
-		   DB.id default_bucket_id
-	from odpp.default_deal DDT
-	   join odpp_dict.default_bucket DB
-	      on datediff(DDT.bdate, DDT.dflt_cl_dt) BETWEEN DB.day_from and nvl(DB.day_to, datediff(DDT.bdate, DDT.dflt_cl_dt))
-	     and DDT.bdate between DB.validFrom and DB.validTo
-	where DDT.bdate = DATE '${pbdate}'
-	  and DDT.branch = '${branch}'
-   ) DEF_DEALS_P
-     on DEF_DEALS_B.dealid = DEF_DEALS_P.dealid
-where DEF_DEALS_B.default_bucket_id != DEF_DEALS_P.default_bucket_id
+select 
+case -- ODPP-874
+when d.maturitydate = t.bdate and d.maturitydate = coalesce(pd.maturitydate,d.maturitydate) then 'DEREC_Loan'
+else 'EREPAY_Loan'
+end                as eventTrigger
+,da1.dealID 
+,da1.dealID        as eventObject
+,sum(t.amount)
+,t.bdate
+,t.branch
+from odpp.transactions t 
+join odpp.deal_asset_acc_tmp da1 on da1.bdate = t.bdate and da1.branch = t.branch
+  and da1.accid = t.creditid 
+  and da1.productClass in ('Loan', 'Interbank loan', 'Loan_Cession')
+  and da1.accountingclass = 'Principal' 
+join odpp.deal_tmp2 d on d.bdate = da1.bdate and d.branch = da1.branch and d.key = da1.dealid and nullif(t.expid_db, d.expid) is null
+left join odpp.deal_tmp2 pd on pd.bdate = DATE'${pbdate}' and pd.branch = d.branch and pd.key = d.key
+join odpp.deal_asset_balance_tmp db on db.bdate = da1.bdate and db.branch = da1.branch and db.dealID = da1.dealID
+  and coalesce(db.principal,0) = 0 and coalesce(db.overdueprincipal,0) = 0 and coalesce(db.overdueinterest,0) = 0
+left join odpp_dict.ga_product g2 on t.bdate between g2.validfrom and g2.validto
+  and g2.ga2 = substr(t.debitno, 1, 5)
+  and case
+  when da1.productClass = 'Loan_Cession' then g2.accountingClass not in ('Cession', 'Transit')
+  else g2.accountingClass in ('Overdue','Provision','Cession') or g2.accountingClass like 'PL%'
+  end is true
+where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
+  and g2.ga2 is null
+  and ( -- ODPP-874
+    (d.maturitydate > t.bdate or (d.maturitydate = t.bdate and d.maturitydate < coalesce(pd.maturitydate,d.maturitydate) )) --EarlyRepayment
+    or
+    (d.maturitydate = t.bdate and d.maturitydate = coalesce(pd.maturitydate,d.maturitydate) ) -- Derecognition
+  )
+  --and d.maturitydate >= t.bdate
+group by t.bdate, t.branch, da1.dealID, d.maturitydate, pd.maturitydate
+;
+
+
+-- Loan Overdue -- ODPP-755
+insert into odpp.events
+select
+ 'DEREC_Loan'       as eventTrigger
+,da1.dealID 
+,da1.dealID        as eventObject
+,sum(t.amount)
+,t.bdate
+,t.branch
+from odpp.transactions t 
+join odpp.deal_asset_acc_tmp da1 on da1.bdate = t.bdate and da1.branch = t.branch
+  and da1.accid = t.creditid 
+  and da1.productClass in ('Loan', 'Interbank loan', 'Loan_Cession')
+  and da1.accountingclass in('Interest overdue', 'Overdue')
+join odpp.deal_asset_balance_tmp db on db.bdate = da1.bdate and db.branch = da1.branch and db.dealID = da1.dealID
+  and coalesce(db.principal,0) = 0 and coalesce(db.interest,0) = 0 and coalesce(db.overdueprincipal,0) = 0 and coalesce(db.overdueinterest,0) = 0
+left join odpp_dict.ga_product g2 on t.bdate between g2.validfrom and g2.validto
+  and g2.ga2 = substr(t.debitno, 1, 5)
+  and (
+  g2.accountingClass in ('Interest accrued','Interest overdue','Overdue','Provision') 
+  or (da1.productclass != 'Loan_Cession' and g2.accountingClass = 'Cession')
+  or (da1.productclass = g2.productClass and g2.accountingClass = 'Principal')
+  or g2.accountingClass like 'PL%'
+  ) is true
+where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
+  and g2.ga2 is null
+group by t.bdate, t.branch, da1.dealID
+;
+
+
+-- Deposit
+insert into odpp.events
+select 
+case -- ODPP-874
+when d.maturitydate = t.bdate and d.maturitydate = coalesce(pd.maturitydate,d.maturitydate) then 'DEREC_Deposit'
+else 'EREPAY_Deposit'
+end                as eventTrigger
+,da1.dealID 
+,da1.dealID        as eventObject
+,sum(t.amount)
+,t.bdate
+,t.branch
+from odpp.transactions t 
+join odpp.deal_asset_acc_tmp da1 on da1.bdate = t.bdate and da1.branch = t.branch
+  and da1.accid = t.debitid 
+  and da1.productClass in ('Interbank deposit', 'Deposit')
+  and da1.accountingClass = 'Principal'
+  and da1.balance = 0
+join odpp.deal_tmp2 d on d.bdate = da1.bdate and d.branch = da1.branch and d.key = da1.dealid and nullif(t.expid_db, d.expid) is null
+left join odpp.deal_tmp2 pd on pd.bdate = DATE'${pbdate}' and pd.branch = d.branch and pd.key = d.key
+left join odpp_dict.ga_product g2 on t.bdate between g2.validfrom and g2.validto
+  and g2.ga2 = substr(t.creditno, 1, 5)
+  and g2.accountingClass like 'PL%'
+where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
+  and g2.ga2 is null
+  and ( -- ODPP-874
+    (d.maturitydate > t.bdate or (d.maturitydate = t.bdate and d.maturitydate < coalesce(pd.maturitydate,d.maturitydate) )) --EarlyRepayment
+    or
+    (d.maturitydate = t.bdate and d.maturitydate = coalesce(pd.maturitydate,d.maturitydate) ) -- Derecognition
+  )
+group by t.bdate, t.branch, da1.dealID, d.maturitydate, pd.maturitydate
 ;
