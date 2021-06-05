@@ -1,107 +1,110 @@
-
--- 'RESTRU_NOT_COM' RestructuringNotcomm: МБК, реструктуризация задолженности, связанная с изменением кредитного риска
--- 'RESTRU_COM' RestructuringComm: МБК, реструктуризация задолженности, не связанная с изменением кредитного риска
--- 'RESTRU_COM_CC' RestructuringCommChangeCalc: МБК, реструктуризация задолженности, не связанная с изменением кредитного риска (переход с линейного метода на ЭПС)
-
-/*
-
-ODPP-396
-
-График погашения изменен = было событие odpp_dict.event_trigger.code = 'VN'
-либо (и)
-Ставка процента по договору изменена = изменен атрибут odpp.deal_tmp2.interestRate
-либо (и)
-Срок Maturity изменен = изменен атрибут odpp.deal_tmp2.maturitydate
-
-а также
-
-Дата Maturity больше, чем дата изменения = odpp.deal_tmp2.maturitydate > '${bdate}'
-и одновременно НЕ выполняются условия для событий:
-- ChangeFloatRate            = odpp_dict.event_trigger.eventtype = 'ChangeFloatRate'
-- Prepayment                 = odpp_dict.event_trigger.eventtype = 'Prepayment'
-- Significant modification   = odpp_dict.event_trigger.eventtype = 'Significant modification'
-и одновременно 
-
-RESTRU_NOT_COM ->
-Атрибут Метод определения амортизированной стоимости (Атр 62) не изменен = odpp_acc.incontract_t.IsStraightLine        
-и одновременно маркер дефолта = да        = odpp.default_deal.dflt_crn_f = 1
-
-RESTRU_COM ->
-Атрибут Метод определения амортизированной стоимости (Атр 62) не изменен = odpp_acc.incontract_t.IsStraightLine 
-и одновременно маркер дефолта = нет      = odpp.default_deal.dflt_crn_f = 0
-
-'RESTRU_COM_CC' ->
-Атрибут Метод определения амортизированной стоимости (Атр 62) изменен с линейного на ЭПС odpp_acc.incontract_t.isstraightline был 1, стал <> 1
-*/
-
 insert into odpp.events
 select 
- case 
-   when u.isStraightLine = u.isStraightLinePrev and u.isS3 = 1 then 'RESTRU_NOT_COM'
-   when u.isStraightLine = u.isStraightLinePrev and coalesce(u.isS3,0) = 0 then 'RESTRU_COM'
-   when u.isStraightLinePrev = 1 and u.isStraightLine <> 1 then 'RESTRU_COM_CC'
- end      as eventTrigger
-,u.key    as dealID
-,u.key    as eventObject
-,null     as amount
-,u.bdate
-,u.branch
-from (
-    select
-     d.key
-    ,d.bdate
-    ,d.branch
-    ,dd.isS3     as isS3 -- TODO: check непонятно, надо ли учитывать тут атрибуты ручного ввода иначе используем dd.dflt_crn_f
-    ,coalesce(de.isStraightLine,-1) as isStraightLine
-    ,coalesce(pde.isStraightLine,-1) as isStraightLinePrev
-    -- current day
-    from (
-      -- отберем МБК 
-      select 
-        d.key
-       ,d.srcdealid
-       ,d.interestRate
-       ,d.maturitydate
-       ,d.bdate
-       ,d.branch    
-      from odpp.deal_tmp2 d
-      join odpp.account_tmp acc on d.mainaccountid = acc.key and acc.bdate = d.bdate and acc.branch = d.branch
-      join odpp_dict.ga_product ga on substring(acc.accountno,1,5) = ga.ga2 and d.bdate between ga.validfrom and ga.validto
-      where 1=1
-      and d.bdate = '${bdate}'
-      and d.branch = '${branch}'
-      and ga.productclass in ('Interbank loan')
-      -- вычтем сделки, по которым не должны выполняться условия по событиям
-      minus
-      select 
-        d.key
-       ,d.srcdealid
-       ,d.interestRate
-       ,d.maturitydate
-       ,d.bdate
-       ,d.branch 
-      from odpp.deal_tmp2 d
-      join odpp.account_tmp acc on d.mainaccountid = acc.key and acc.bdate = d.bdate and acc.branch = d.branch
-      join odpp_dict.ga_product ga on substring(acc.accountno,1,5) = ga.ga2 and d.bdate between ga.validfrom and ga.validto
-      join odpp.inevent_t_ext e on e.eventObject = d.key and e.bdate = d.bdate and e.branch = d.branch
-      join odpp_dict.event_trigger et on e.eventTrigger = et.code and et.eventtype in ('ChangeFloatRate', 'Prepayment', 'Significant modification')
-      where 1=1
-      and d.bdate = '${bdate}'
-      and d.branch = '${branch}'
-      and ga.productclass in ('Interbank loan')
-    ) d
-    left join odpp.deal_ekpp_tmp de on de.dealid = d.key and de.bdate = d.bdate and de.branch = d.branch
-    left join odpp.inevent_t_ext evn on evn.eventObject = d.key and evn.eventTrigger = 'VN' and evn.bdate = d.bdate and evn.branch = d.branch
-    left join odpp.default_deal dd on dd.dealid = d.key and dd.bdate = d.bdate and dd.branch = d.branch
-    -- previous day
-    join odpp.deal_tmp2 pd on pd.key = d.key and pd.bdate = '${pbdate}' and pd.branch = d.branch
-    left join odpp.deal_ekpp_tmp pde on pde.dealid = pd.key and pde.bdate = pd.bdate and pde.branch = pd.branch
-    where 1=1
-      and coalesce(d.maturitydate, odpp.max_date()) > '${bdate}'
-      and (
-           evn.eventid is not null
-        or coalesce(d.interestRate,0) <> coalesce(pd.interestRate,0) 
-        or coalesce(d.maturitydate, odpp.max_date()) <> coalesce(pd.maturitydate, odpp.max_date())
-      )
-) u
+'ATTR_LSM' as eventTrigger
+,t1.key    as dealID 
+,t1.key    as eventObject
+,null      as amount
+,t1.bdate
+,t1.branch
+from odpp.deal_tmp2 t1
+join odpp.deal_tmp2 t0 on t0.key = t1.key 
+join odpp.deal_ekpp_tmp ek1 on (t1.key = ek1.dealid and t1.bdate = ek1.bdate and t1.branch = ek1.branch)
+join odpp.deal_ekpp_tmp ek0 on (t0.key = ek0.dealid and t0.bdate = ek0.bdate and t0.branch = ek0.branch)
+join odpp.subject_tmp s1 on (t1.clientid = s1.key and t1.bdate = s1.bdate and t1.branch = s1.branch)
+join odpp.subject_tmp s0 on (t0.clientid = s0.key and t0.bdate = s0.bdate and t0.branch = s0.branch)
+join odpp.account_tmp ac on (t1.mainaccountid = ac.key and t1.bdate = ac.bdate and t1.branch = ac.branch)
+join odpp_dict.ga_product g1 on ac.balanceno = g1.ga2 and t1.bdate between g1.validfrom and g1.validto
+where t1.bdate = DATE'${bdate}' and t1.branch = '${branch}'
+  and t0.bdate = DATE'${pbdate}' and t0.branch = '${branch}'
+  and t1.maturitydate != t1.bdate 
+  and g1.productclass in ('Loan', 'Loan_Cession', 'Interbank loan') 
+  and (t1.currency != t0.currency
+   or coalesce(t1.ratetype, '') != coalesce(t0.ratetype, '')
+   or s1.sourcesubjectid != s0.sourcesubjectid
+   or ek1.sppi != ek0.sppi
+  )
+union all
+select 
+'ATTR_DSM' as eventTrigger
+,t1.key    as dealID 
+,t1.key    as eventObject
+,null      as amount
+,t1.bdate
+,t1.branch
+from odpp.deal_tmp2 t1
+join odpp.deal_tmp2 t0 on t0.key = t1.key 
+join odpp.subject_tmp s1 on (t1.clientid = s1.key and t1.bdate = s1.bdate and t1.branch = s1.branch)
+join odpp.subject_tmp s0 on (t0.clientid = s0.key and t0.bdate = s0.bdate and t0.branch = s0.branch)
+join odpp.account_tmp ac on (t1.mainaccountid = ac.key and t1.bdate = ac.bdate and t1.branch = ac.branch)
+join odpp_dict.ga_product g1 on ac.balanceno = g1.ga2 and t1.bdate between g1.validfrom and g1.validto
+where t1.bdate = DATE'${bdate}' and t1.branch = '${branch}'
+  and t0.bdate = DATE'${pbdate}' and t0.branch = '${branch}'
+  and t1.maturitydate != t1.bdate 
+  and g1.productclass in ('Deposit', 'Interbank deposit') 
+  and (t1.currency != t0.currency
+   or coalesce(t1.ratetype, '') != coalesce(t0.ratetype, '')
+   or s1.sourcesubjectid != s0.sourcesubjectid
+  )
+union all
+select 
+'ATTR_EXPID' as eventTrigger
+,t1.key    as dealID 
+,t1.key    as eventObject
+,null      as amount
+,t1.bdate
+,t1.branch
+from odpp.deal_tmp2 t1
+join odpp.deal_tmp2 t0 on t0.key = t1.key 
+join odpp.account_tmp ac on (t1.mainaccountid = ac.key and t1.bdate = ac.bdate and t1.branch = ac.branch)
+join odpp_dict.ga_product g1 on ac.balanceno = g1.ga2 and t1.bdate between g1.validfrom and g1.validto
+where t1.bdate = DATE'${bdate}' and t1.branch = '${branch}'
+  and t0.bdate = DATE'${pbdate}' and t0.branch = '${branch}'
+  and t1.maturitydate != t1.bdate 
+  and g1.productclass in ('Loan', 
+  						  'Credit line', 
+  						  'Loan_Cession', 
+  						  'Interbank loan', 
+  						  'Deposit', 
+  						  'Interbank deposit', 
+  						  'Guaranties', 
+  						  'Accounts (due from)', 
+  						  'L/C', 
+  						  'Other assets') 
+  and t1.srcdealid != t0.srcdealid
 ;
+
+-- ValueNotional
+
+with t1 as (  
+select t1.dealid, sum(hash(t1.duedate, t1.currency, t1.amount, t1.typeid)+hash(t1.currency, t1.duedate, t1.typeid, t1.amount)) as txx
+from odpp.cashflow t1
+where 1=1
+  and t1.bdate = DATE'${bdate}' 
+  and t1.branch = '${branch}'
+  and t1.duedate >= t1.bdate
+group by t1.dealid
+),
+t0 as (
+select pt.dealid, sum(hash(pt.duedate, pt.currency, pt.amount, pt.typeid)+hash(pt.currency, pt.duedate, pt.typeid, pt.amount)) as pxx
+from odpp.cashflow pt
+where 1=1
+  and pt.bdate = DATE'${pbdate}'
+  and pt.branch = '${branch}'
+  and pt.duedate >= DATE'${bdate}'
+group by pt.dealid
+)
+insert into odpp.events
+select 
+ 'VN' eventTrigger
+,coalesce(t1.dealid, t0.dealid)  as dealid
+,coalesce(t1.dealid, t0.dealid)  as eventObject
+,null                            as amount
+,DATE'${bdate}'                  as bdate
+,'${branch}'                     as branch 
+from t1
+full join t0 on t0.dealid = t1.dealid 
+where 1=1
+  and coalesce(t0.pxx, 0) != coalesce(t1.txx, 0)
+;
+
+
