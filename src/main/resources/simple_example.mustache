@@ -1,54 +1,42 @@
-with 
-t0 as (
+with
+t1 as (
 select 
- t.key as deal_id, t.bdate, t.branch
-,t.productid        as attr_prod
-,t.isuncommitted    as attr_ucmt
-,coalesce(t.productcodedevl,'') as attr_cdevel
-from odpp.deal_tmp2 t
-where bdate in (DATE'${bdate}',DATE'${pbdate}') and branch = '${branch}'
+ concat(cm.euabd,cm.euand,cm.euasd,cm.eudt1d) as expID
+,sum(ct.eumsu)                                as allocatedValue
+,cm.bdate    
+,cm.branch
+ from odpp_bis.seuddy cm
+ join odpp_bis.seuy ct on ct.bdate = cm.bdate and ct.branch = cm.branch and ct.euabo = cm.euabo and ct.euano = cm.euano and ct.euaso = cm.euaso
+ join odpp.account_tmp a on a.bdate = cm.bdate and a.branch = cm.branch and a.sourceaccountid = concat(cm.euabo,cm.euano,cm.euaso) and a.activetype in ('RC','RE','RI')
+where cm.bdate = '${bdate}' and cm.branch = '${branch}'
+group by cm.bdate, cm.branch, cm.euabd,cm.euand,cm.euasd,cm.eudt1d
 )
-,t1 as (
-select deal_id, bdate, branch, attr, value 
-from t0 lateral view explode(map('ATTR_PROD', ATTR_PROD, 'ATTR_UCMT', ATTR_UCMT, 'ATTR_CDEVEL', ATTR_CDEVEL)) upv as attr, value
-)
-insert into odpp.events
+,t0 as (
 select 
- d.attr     as eventTrigger
-,d.deal_id  as dealID 
-,d.deal_id  as eventObject
-,null       as amount
-,d.bdate
-,d.branch
-from t1 d
-join t1 pd on pd.deal_id = d.deal_id and pd.attr = d.attr and pd.branch = d.branch and pd.bdate = DATE'${pbdate}'
-where d.bdate = DATE'${bdate}'
-  and d.value != pd.value
-;
-
-with 
-t0 as (
-select 
- t.key as deal_id, t.bdate, t.branch
-,coalesce(t.grossbookvalue,0)       as attr_gb
-,coalesce(t.balanceequivalent,0)    as attr_be
-from odpp.deal_tmp2 t
-where bdate in (DATE'${bdate}',DATE'${pbdate}') and branch = '${branch}'
+ concat(cm.euabd,cm.euand,cm.euasd,cm.eudt1d) as expID
+,sum(ct.eumsu)                                as allocatedValue
+,cm.bdate    
+,cm.branch
+ from odpp_bis.seuddy cm
+ join odpp_bis.seuy ct on ct.bdate = cm.bdate and ct.branch = cm.branch and ct.euabo = cm.euabo and ct.euano = cm.euano and ct.euaso = cm.euaso
+ join odpp.account_tmp a on a.bdate = cm.bdate and a.branch = cm.branch and a.sourceaccountid = concat(cm.euabo,cm.euano,cm.euaso) and a.activetype in ('RC','RE','RI')
+where cm.bdate = '${pbdate}' and cm.branch = '${branch}'
+group by cm.bdate, cm.branch, cm.euabd,cm.euand,cm.euasd,cm.eudt1d
 )
-,t1 as (
-select deal_id, bdate, branch, attr, value 
-from t0 lateral view explode(map('ATTR_GB', ATTR_GB, 'ATTR_BE', ATTR_BE)) upv as attr, value
+,tx as (
+select coalesce(t1.expID, t0.expID) expID
+  from t1
+  full outer join t0 on t1.expID = t0.expID
+ where coalesce(t1.allocatedValue,0) != coalesce(t0.allocatedValue,0)
 )
 insert into odpp.events
 select 
- d.attr     as eventTrigger
-,d.deal_id  as dealID 
-,d.deal_id  as eventObject
-,null       as amount
+'ATTR_CLTL'  as eventTrigger
+,d.key       as dealID
+,d.key       as eventObject
+,null        as amount
 ,d.bdate
 ,d.branch
-from t1 d
-left join t1 pd on pd.deal_id = d.deal_id and pd.attr = d.attr and pd.branch = d.branch and pd.bdate = DATE'${pbdate}'
-where d.bdate = DATE'${bdate}'
-  and d.value != coalesce(pd.value,0)
+  from tx
+  join odpp.deal_tmp2 d on d.expid = tx.expid and d.bdate = '${bdate}' and d.branch = '${branch}' and d.descproductcodedevl like '%MORTGAGE%'
 ;
