@@ -1,147 +1,107 @@
--- ACC-BIS part
--- ODPP-718 - utm_dev.t_bis_transit_mart partitionong  - для ACC один batch_id для филиала за дату
-with 
-m0 as ( -- нормируем каждый тип мнемоники в свою колонку
-select
-case
-  when t.debitmnemonic  like 'PL%' then t.debitmnemonic
-  when t.creditmnemonic like 'PL%' then t.creditmnemonic
-end                as utm_mm_PL0
-,case
-  when t.debitmnemonic  like 'EIR%' then t.debitmnemonic
-  when t.creditmnemonic like 'EIR%' then t.creditmnemonic
-end               as utm_mm_EIR0
-,case
-  when t.transactionTemplateID in (2,15)  then '4'
-  when t.transactionTemplateID in (11,16) then '5'
-  when ek.ifrscategory = 'AmortizedCost'  then '1'
-  when ek.ifrscategory = 'FVOCI'          then '2'
-  when ek.ifrscategory = 'FVPL'           then '3'
-end                as utm_mm_IFRS
-,da.productclass   as utm_productClass
-,da.accno          as utm_account
-,t.*
-from odpp_acc.outTransaction_t t
-join odpp.deal_tmp2 d on d.bdate = t.bdate and d.branch = t.branch and d.expid = t.contractid
-join odpp.deal_ekpp_tmp ek on ek.bdate = d.bdate and ek.branch = d.branch and ek.dealid = d.key
-join odpp.deal_asset_acc_tmp da on da.bdate = d.bdate and da.branch = d.branch and da.dealid = d.key and da.accID = d.mainaccountid
-where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
-  and t.destinationsystem = '2' -- система-назначения BIS. пока однозначно соответствует branch, но всё может измениться
-)
-,m1 as (
-select
-case
-  when t.utm_productClass in ('Interbank loan','Loan') then concat(t.utm_mm_EIR0,'_1')
-  when t.utm_productClass in ('Loan_Cession') and t.utm_account like '478%' then concat(t.utm_mm_EIR0,'_2') -- ODPP-797
-  when t.utm_productClass in ('Loan_Cession') then concat(t.utm_mm_EIR0,'_1')
-  else t.utm_mm_EIR0 -- e.productclass in ('Interbank deposit','Deposit')
-end                as utm_mm_EIR
-,case
-  when t.transactiontemplateid in (10,101,23) then translate(t.utm_mm_PL0,'()','')
-  when t.utm_mm_PL0 in ('PL_5_P','PL_5_A') then t.utm_mm_PL0
-  else concat_ws('_'
-    ,translate(t.utm_mm_PL0,'()','')
-    ,map(
-       '12',  ofr.ofr3_12
-      ,'13',  ofr.ofr3_13
-      ,'14',  ofr.ofr3_14
-      ,'21',  ofr.ofr3_21
-      ,'21R', ofr.ofr3_21_rev
-      ,'24',  ofr.ofr3_24
-      ,'32',  ofr.ofr3_32
-      ,'33',  ofr.ofr3_33
-      ,'35',  ofr.ofr3_35
-      ,'36',  ofr.ofr3_36
-      ,'41',  ofr.ofr3_41
-      ,'41R', ofr.ofr3_41_rev
-      ,'44',  ofr.ofr3_44
-     )[concat(substr(mask.accountmask,-2), if(upper(t.utm_mm_PL0) like '%REVAL%', 'R', ''))]
-     ,utm_mm_IFRS
-     )
-end                as utm_mm_PL
-,t.*
-from m0 t
-left join odpp_dict.accaccountmask mask on mask.producttype = t.utm_productClass and concat(mask.accountmaskmnemonic,'_',mask.isactive) = t.utm_mm_PL0
-left join odpp_dict.ga_product0    ofr  on ofr.accnum = substr(t.utm_account,1,5) and (ofr.ofr12 = substr(t.utm_account,14,2) or ofr.ofr12 is null) and t.bdate between ofr.validFrom and ofr.validTo -- TODO: check
-)
-insert overwrite table utm_dev.t_bis_transit_mart partition(business_date, branch_id, batch_id) -- ODPP-718
-select
- cast(null as bigint)          as row_id
-,case
-when t.transactiontemplateid = 1311 then '13A'
-else lpad(t.transactiontemplateid, 3, '0')
-end                            as entry_sourcesystem_id -- ODPP-699
-,'2'                           as acc_entry_id -- const ODPP-572
-,'L'                           as acc_entry_status_id -- const ODPP-658
-,odpp.iso_date_to_bis(current_date) as acc_entry_status_date
-,cast(null as string)          as acc_entry_status_time
-,concat('IF', odpp.iso_date_to_bis(current_date), lpad(t.id, 7, '0'))   
-                               as acc_entry_bis_id
-,cast('$RSRV' as String)       as acc_entry_val_user_id
-,t.branch                      as branch
-,concat(branch, contractid)    as transaction_type_link_id
-,odpp.iso_date_to_bis(cast(t.transactiondate as date)) 
-                               as acc_entry_date
-,case
-when t.utm_productClass in ('Deposit','Interbank deposit') then 'ACD'
-else 'ACC'
-end                            as transaction_template_id  -- ODPP-699
-,cast(round(t.amount*100) as bigint) 
-                               as transaction_amount -- ODPP-632
-,case
-when t.currency = 'RUB' then 'RUR'
-else t.currency
-end                            as transaction_currency1
-,case
-when t.currency = 'RUB' then 'RUR'
-else t.currency
-end                            as transaction_currency2
-,cast(round(t.amountrur*100) as bigint) 
-                               as transaction_rub_amount -- ODPP-632
-,t.transactionnotation         as transaction_notation
-,cast(null as string)          as da_status_date
-,cast(null as string)          as da_status_time
-,concat(t.debit_bisab,t.debit_bisan,t.debit_bisas)  
-                               as debit_account_id
-,cast(null as bigint)          as acc_entry_debit_account_id
-,case
-  when t.debitmnemonic  like 'EIR%' then t.utm_mm_EIR
-  when t.debitmnemonic  like 'PL%'  then t.utm_mm_PL
-  else t.debitmnemonic
-end                            as account_mask_mnemonic_d
-,t.debitaccountreference       as debit_account_nb   
-,cast(null as bigint)          as acc_entry_debit_account_nb
-,cast(null as string)          as da_portfolio_id
-,cast(null as string)          as d_psd 
-,cast(null as bigint)          as credit_account_id -- TODO: type mismatch - concat(credit_bisab,credit_bisan,credit_bisas)
-,cast(null as bigint)          as accentry_creditaccountid
-,t.creditaccountreference      as credit_account_nb
-,cast(null as string)          as acc_entry_credit_account_nb
-,case
-  when t.creditmnemonic like 'EIR%' then t.utm_mm_EIR
-  when t.creditmnemonic like 'PL%'  then t.utm_mm_PL
-  else t.creditmnemonic
-end                            as account_mask_mnemonic_c
-,cast(null as string)          as ca_portfolio_id 
-,cast(null as string)          as c_psd
-,'311'                         as acc_entry_code
-,cast(null as string)          as prerr
-,cast(null as string)          as prdtp
-,cast(null as string)          as prtmp
-,cast(null as string)          as prxfil
-,cast(null as string)          as prxdt
-,cast(null as string)          as prxnum
-,cast(null as string)          as prpod 
-,cast(null as string)          as prbrnm 
-,cast(null as string)          as prpbr
-,cast(null as string)          as prsqd
-,cast(null as string)          as prsqc
-,cast(null as string)          as prres
---
-,t.bdate                       as business_date
-,t.branch                      as branch_id
-,t.packageid                   as batch_id
-from m1 t
-where 1=1
-  and round(t.amount*100) != 0 -- ODPP-632
+
+-- 'RESTRU_NOT_COM' RestructuringNotcomm: МБК, реструктуризация задолженности, связанная с изменением кредитного риска
+-- 'RESTRU_COM' RestructuringComm: МБК, реструктуризация задолженности, не связанная с изменением кредитного риска
+-- 'RESTRU_COM_CC' RestructuringCommChangeCalc: МБК, реструктуризация задолженности, не связанная с изменением кредитного риска (переход с линейного метода на ЭПС)
+
+/*
+
+ODPP-396
+
+График погашения изменен = было событие odpp_dict.event_trigger.code = 'VN'
+либо (и)
+Ставка процента по договору изменена = изменен атрибут odpp.deal_tmp2.interestRate
+либо (и)
+Срок Maturity изменен = изменен атрибут odpp.deal_tmp2.maturitydate
+
+а также
+
+Дата Maturity больше, чем дата изменения = odpp.deal_tmp2.maturitydate > '${bdate}'
+и одновременно НЕ выполняются условия для событий:
+- ChangeFloatRate            = odpp_dict.event_trigger.eventtype = 'ChangeFloatRate'
+- Prepayment                 = odpp_dict.event_trigger.eventtype = 'Prepayment'
+- Significant modification   = odpp_dict.event_trigger.eventtype = 'Significant modification'
+и одновременно 
+
+RESTRU_NOT_COM ->
+Атрибут Метод определения амортизированной стоимости (Атр 62) не изменен = odpp_acc.incontract_t.IsStraightLine        
+и одновременно маркер дефолта = да        = odpp.default_deal.dflt_crn_f = 1
+
+RESTRU_COM ->
+Атрибут Метод определения амортизированной стоимости (Атр 62) не изменен = odpp_acc.incontract_t.IsStraightLine 
+и одновременно маркер дефолта = нет      = odpp.default_deal.dflt_crn_f = 0
+
+'RESTRU_COM_CC' ->
+Атрибут Метод определения амортизированной стоимости (Атр 62) изменен с линейного на ЭПС odpp_acc.incontract_t.isstraightline был 1, стал <> 1
+*/
+
+insert into odpp.events
+select 
+ case 
+   when u.isStraightLine = u.isStraightLinePrev and u.isS3 = 1 then 'RESTRU_NOT_COM'
+   when u.isStraightLine = u.isStraightLinePrev and coalesce(u.isS3,0) = 0 then 'RESTRU_COM'
+   when u.isStraightLinePrev = 1 and u.isStraightLine <> 1 then 'RESTRU_COM_CC'
+ end      as eventTrigger
+,u.key    as dealID
+,u.key    as eventObject
+,null     as amount
+,u.bdate
+,u.branch
+from (
+    select
+     d.key
+    ,d.bdate
+    ,d.branch
+    ,dd.isS3     as isS3 -- TODO: check непонятно, надо ли учитывать тут атрибуты ручного ввода иначе используем dd.dflt_crn_f
+    ,coalesce(de.isStraightLine,-1) as isStraightLine
+    ,coalesce(pde.isStraightLine,-1) as isStraightLinePrev
+    -- current day
+    from (
+      -- отберем МБК 
+      select 
+        d.key
+       ,d.srcdealid
+       ,d.interestRate
+       ,d.maturitydate
+       ,d.bdate
+       ,d.branch    
+      from odpp.deal_tmp2 d
+      join odpp.account_tmp acc on d.mainaccountid = acc.key and acc.bdate = d.bdate and acc.branch = d.branch
+      join odpp_dict.ga_product ga on substring(acc.accountno,1,5) = ga.ga2 and d.bdate between ga.validfrom and ga.validto
+      where 1=1
+      and d.bdate = '${bdate}'
+      and d.branch = '${branch}'
+      and ga.productclass in ('Interbank loan')
+      -- вычтем сделки, по которым не должны выполняться условия по событиям
+      minus
+      select 
+        d.key
+       ,d.srcdealid
+       ,d.interestRate
+       ,d.maturitydate
+       ,d.bdate
+       ,d.branch 
+      from odpp.deal_tmp2 d
+      join odpp.account_tmp acc on d.mainaccountid = acc.key and acc.bdate = d.bdate and acc.branch = d.branch
+      join odpp_dict.ga_product ga on substring(acc.accountno,1,5) = ga.ga2 and d.bdate between ga.validfrom and ga.validto
+      join odpp.inevent_t_ext e on e.eventObject = d.key and e.bdate = d.bdate and e.branch = d.branch
+      join odpp_dict.event_trigger et on e.eventTrigger = et.code and et.eventtype in ('ChangeFloatRate', 'Prepayment', 'Significant modification')
+      where 1=1
+      and d.bdate = '${bdate}'
+      and d.branch = '${branch}'
+      and ga.productclass in ('Interbank loan')
+    ) d
+    left join odpp.deal_ekpp_tmp de on de.dealid = d.key and de.bdate = d.bdate and de.branch = d.branch
+    left join odpp.inevent_t_ext evn on evn.eventObject = d.key and evn.eventTrigger = 'VN' and evn.bdate = d.bdate and evn.branch = d.branch
+    left join odpp.default_deal dd on dd.dealid = d.key and dd.bdate = d.bdate and dd.branch = d.branch
+    -- previous day
+    join odpp.deal_tmp2 pd on pd.key = d.key and pd.bdate = '${pbdate}' and pd.branch = d.branch
+    left join odpp.deal_ekpp_tmp pde on pde.dealid = pd.key and pde.bdate = pd.bdate and pde.branch = pd.branch
+    where 1=1
+      and coalesce(d.maturitydate, odpp.max_date()) > '${bdate}'
+      and (
+           evn.eventid is not null
+        or coalesce(d.interestRate,0) <> coalesce(pd.interestRate,0) 
+        or coalesce(d.maturitydate, odpp.max_date()) <> coalesce(pd.maturitydate, odpp.max_date())
+      )
+) u
 ;
