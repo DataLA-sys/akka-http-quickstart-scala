@@ -1,79 +1,39 @@
-
--- ChangeFloatRate: Пересмотр плавающей ставки
--- ODPP-734 - удалено условие на изменение маркера модификации
-
+-- CommissionRecognition
 insert into odpp.events
 select 
-'CH_FLOAT_RATE'    as eventTrigger
-,d.key             as dealID
-,d.key             as eventObject
-,null              as amount
-,d.bdate
-,d.branch 
-from odpp.deal_tmp2 d
-join odpp.account_tmp acc on (d.mainaccountid = acc.key and acc.bdate = d.bdate and acc.branch = d.branch)
-join odpp_dict.ga_product ga on (substring(acc.accountno,1,5) = ga.ga2 and d.bdate between ga.validfrom and ga.validto)
-join odpp.deal_tmp2 pd on (d.key = pd.key and pd.bdate = '${pbdate}' and pd.branch = d.branch)
-  where 1=1
-  and d.bdate = '${bdate}'
-  and d.branch = '${branch}'
-  and d.opendate != d.bdate
-  and d.maturitydate > d.bdate
-  and d.interestrate > 0
-  and coalesce(d.interestrate,0) <> coalesce(pd.interestrate,0)
-  and ga.productclass in ('Loan','Loan_Cession','Deposit')
+'CommRecognition' as eventTrigger
+,da1.dealID 
+,t.transactionid   as eventObject
+,t.amount
+,t.bdate
+,t.branch
+from odpp.transactions t 
+join odpp.deal_asset_acc_tmp da1 on da1.bdate = t.bdate and da1.branch = t.branch 
+  and da1.accid = t.creditid 
+  and da1.productClass in ('Loan', 'Loan_Cession', 'Credit Line', 'Interbank loan')
+  and da1.accountingClass in ('CommissionP')    
+join odpp_dict.ga_product ga2 on t.bdate between ga2.validfrom and ga2.validto
+  and ga2.ga2 = substr(t.debitno,1,5)
+  and ga2.accountingClass in ('CommissionA') 
+where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
 ;
 
-
+-- CostRecognition
 insert into odpp.events
 select 
-'CH_FLOAT_RATE'    as eventTrigger
-,d.key             as dealID
-,d.key             as eventObject
-,null              as amount
-,d.bdate
-,d.branch 
-from odpp.deal_tmp2 d
-join odpp.account_tmp acc on (d.mainaccountid = acc.key and acc.bdate = d.bdate and acc.branch = d.branch)
-join odpp_dict.ga_product ga on (substring(acc.accountno,1,5) = ga.ga2 and d.bdate between ga.validfrom and ga.validto)
-join odpp.deal_tmp2 pd on (d.key = pd.key and pd.bdate = '${pbdate}' and pd.branch = d.branch)
-  where 1=1
-  and d.bdate = '${bdate}'
-  and d.branch = '${branch}'
-  and d.opendate != d.bdate
-  and d.maturitydate = pd.maturitydate
-  and d.ratetype = pd.ratetype
-  and d.ratetype = 'Variable'
-  and d.maturitydate > d.bdate
-  and d.interestrate > 0
-  and coalesce(d.interestrate,0) <> coalesce(pd.interestrate,0)
-  and ga.productclass in ('Interbank loan','Interbank deposit')
-;
-
--- MarketRateChange: Изменение рыночной ставки для расчета справедливой стоимости
-
-insert into odpp.events
-select 
-'CH_MRKT_RATE'    as eventTrigger
-,d.key            as dealID
-,d.key            as eventObject
-,null             as amount
-,d.bdate
-,d.branch 
-from odpp.deal_tmp2 d
-join odpp.account_tmp acc on (d.mainaccountid = acc.key and acc.bdate = d.bdate and acc.branch = d.branch)
-join odpp_dict.ga_product ga on (substring(acc.accountno,1,5) = ga.ga2 and d.bdate between ga.validfrom and ga.validto)
-join odpp_dict.clndr_bdate cl on (cl.bdate = d.bdate and cl.branch = d.branch)
-join odpp.deal_ekpp_tmp de on (d.key = de.dealid and de.bdate = d.bdate and de.branch = d.branch)
-left join odpp.man_attr ma on ma.expid = d.srcdealid and ma.bdate = d.bdate and ma.branch = d.branch
-left join odpp.man_attr pma on pma.expid = d.srcdealid and pma.bdate = '${pbdate}' and pma.branch = d.branch
-where 1=1
-  and d.bdate = '${bdate}'
-  and d.branch = '${branch}'
-  and coalesce(ma.fairValueRate,0) != coalesce(pma.fairValueRate,0)
-  and cl.eom = false
-  and d.opendate != d.bdate
-  and d.maturitydate > d.bdate
-  and ga.productclass in ('Loan','Loan_Cession','Interbank loan','Interbank deposit','Deposit')
-  and de.ifrscategory != 'AmortizedCost'
+'CostRecognition'  as eventTrigger
+,da1.dealID 
+,t.transactionid   as eventObject
+,t.amount
+,t.bdate
+,t.branch
+from odpp.transactions t 
+join odpp.deal_asset_acc_tmp da1 on da1.bdate = t.bdate and da1.branch = t.branch 
+  and da1.accid = t.debitid 
+  and da1.productClass in ('Loan', 'Loan_Cession', 'Credit Line', 'Interbank loan', 'Interbank deposit', 'Deposit')
+  and da1.accountingClass in ('CostsA')    
+join odpp_dict.ga_product ga2 on t.bdate between ga2.validfrom and ga2.validto
+  and ga2.ga2 = substr(t.creditno,1,5) 
+  and ga2.accountingClass in ('CostsP') 
+where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
 ;
