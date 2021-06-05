@@ -1,8 +1,8 @@
--- CommissionRecognition
+-- Repayment (Overdue)
 insert into odpp.events
 select 
-'CommRecognition' as eventTrigger
-,da1.dealID 
+'REPAY_Overdue'    as eventTrigger
+,da1.dealID
 ,t.transactionid   as eventObject
 ,t.amount
 ,t.bdate
@@ -10,30 +10,43 @@ select
 from odpp.transactions t 
 join odpp.deal_asset_acc_tmp da1 on da1.bdate = t.bdate and da1.branch = t.branch 
   and da1.accid = t.creditid 
-  and da1.productClass in ('Loan', 'Loan_Cession', 'Credit Line', 'Interbank loan')
-  and da1.accountingClass in ('CommissionP')    
-join odpp_dict.ga_product ga2 on t.bdate between ga2.validfrom and ga2.validto
-  and ga2.ga2 = substr(t.debitno,1,5)
-  and ga2.accountingClass in ('CommissionA') 
+  and da1.productClass in ('Loan', 'Interbank loan', 'Loan_Cession')
+  and da1.accountingclass = 'Overdue' 
+join odpp.deal_tmp2 d on d.bdate = da1.bdate and d.branch = da1.branch and d.key = da1.dealID and nullif(t.expid_cr, d.expid) is null 
+left join odpp_dict.ga_product g2 on t.bdate between g2.validfrom and g2.validto
+  and g2.ga2 = substr(t.debitno,1,5)
+  and (
+  g2.accountingClass in ('Overdue','Provision') 
+  or g2.accountingClass like 'PL%'
+  or (da1.productClass = g2.productClass and g2.accountingclass = 'Principal')
+  or (da1.productClass != 'Loan_Cession' and g2.accountingClass = 'Cession')
+  )
 where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
+  and g2.ga2 is null
 ;
 
--- CostRecognition
+-- Repayment (Interest)
 insert into odpp.events
 select 
-'CostRecognition'  as eventTrigger
-,da1.dealID 
+'REPAY_Interest'    as eventTrigger
+,da1.dealID
 ,t.transactionid   as eventObject
 ,t.amount
 ,t.bdate
 ,t.branch
 from odpp.transactions t 
 join odpp.deal_asset_acc_tmp da1 on da1.bdate = t.bdate and da1.branch = t.branch 
-  and da1.accid = t.debitid 
-  and da1.productClass in ('Loan', 'Loan_Cession', 'Credit Line', 'Interbank loan', 'Interbank deposit', 'Deposit')
-  and da1.accountingClass in ('CostsA')    
-join odpp_dict.ga_product ga2 on t.bdate between ga2.validfrom and ga2.validto
-  and ga2.ga2 = substr(t.creditno,1,5) 
-  and ga2.accountingClass in ('CostsP') 
+  and da1.accid = t.creditid 
+  and da1.productClass in ('Loan', 'Interbank loan', 'Loan_Cession')
+  and da1.accountingclass = 'Interest overdue' 
+join odpp.deal_tmp2 d on d.bdate = da1.bdate and d.branch = da1.branch and d.key = da1.dealID and nullif(t.expid_cr, d.expid) is null 
+left join odpp_dict.ga_product g2 on t.bdate between g2.validfrom and g2.validto
+  and g2.ga2 = substr(t.debitno,1,5)
+  and (
+  g2.accountingClass in ('Interest accrued', 'Interest overdue', 'Provision') 
+  or g2.accountingClass like 'PL%'
+  or (da1.productClass != 'Loan_Cession' and g2.accountingClass = 'Cession')
+  )
 where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
+  and g2.ga2 is null
 ;
