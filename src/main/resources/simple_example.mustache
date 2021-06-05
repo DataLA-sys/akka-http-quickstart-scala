@@ -1,15 +1,26 @@
+-- ODPP-872 - расчёт событий по флагу default_client.dflt_all_f, для ImpairmentRecovery удалено условие на остаток по счёту
+
 insert into odpp.events 
 select 
-'EOM'        as eventTrigger
-,d.key       as dealID
-,d.key       as eventObject
-,null        as amount
+case 
+when dc.dflt_all_f = '1' then 'DEF_DEAL'
+else 'DEF_DEAL_REC'
+end                     as eventTrigger
+,d.key                  as dealID
+,d.key                  as eventObject
+,cast(null as decimal)  as amount
 ,d.bdate
 ,d.branch
-  from odpp_dict.clndr_bdate t
-  join odpp.deal_tmp2 d on d.bdate = t.bdate and d.branch = t.branch
-where 1=1
-  and t.bdate = '${bdate}'
-  and t.branch = '${branch}'
-  and t.eom
+from odpp.deal_tmp2 d
+join odpp.account_tmp acc on acc.key = d.mainaccountid and acc.bdate = d.bdate and acc.branch = d.branch
+join odpp_dict.ga_product ga on ga.ga2 = substring(acc.accountno,1,5) and acc.bdate between ga.validfrom and ga.validto
+join odpp.default_client dc  on dc.clientid = d.clientid  and dc.branch = d.branch  and dc.bdate = d.bdate  
+join odpp.default_client pdc on pdc.clientid = d.clientid and pdc.branch = d.branch and pdc.bdate = '${pbdate}'
+where d.bdate = '${bdate}' and d.branch = '${branch}'
+and ga.productclass in ('Loan','Loan_Cession','Interbank loan')
+and ( 
+  (pdc.dflt_all_f = '0' and dc.dflt_all_f = '1')
+  or
+  (pdc.dflt_all_f = '1' and dc.dflt_all_f = '0')
+)
 ;
