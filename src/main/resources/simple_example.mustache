@@ -1,70 +1,90 @@
--- Loan*
+-- *-cr
 insert into odpp.events
-select 
-'IRE_Loan'            as eventTrigger
-,da1.dealID
-,min(t.transactionid) as eventObject
-,min(struct(t.transactionid,t.amount)).col2 as amount
+select
+case 
+when da.productClass in ('Deposit', 'Interbank deposit') then 'IA_DEP-cr'
+else 'IA_LOA-cr' 
+end                as eventTrigger
+,da.dealID
+,t.transactionid   as eventObject
+,t.amount
 ,t.bdate
 ,t.branch
-from odpp.transactions t 
-join odpp.deal_asset_acc_tmp da1 on da1.bdate = t.bdate and da1.branch = t.branch
-  and da1.accid = t.debitid 
-  and da1.productClass in ('Loan', 'Interbank loan', 'Loan_Cession')
-  and case 
-  when da1.productClass != 'Loan_Cession' then da1.accountingclass = 'Principal'
-  else da1.accountingClass in ('Principal', 'Overdue')
-  end is true
-join odpp.deal_tmp2 d on d.bdate = da1.bdate and d.branch = da1.branch and d.key = da1.dealid and nullif(t.expid_db, d.expid) is null
-  and d.opendate = t.bdate
-left join odpp_dict.ga_product g2 on t.bdate between g2.validfrom and g2.validto
-  and g2.ga2 =  substr(t.creditno,1,5)
-  and (g2.accountingClass in ('Overdue') or g2.accountingClass like 'PL%')
+from odpp.transactions t
+join odpp.deal_asset_acc_tmp da on da.bdate = t.bdate and da.branch = t.branch
+  and da.accid = t.creditid 
+  and da.productClass in ('Loan', 'Interbank loan', 'Deposit', 'Interbank deposit')
+  and da.accountingclass in ('Interest accrued', 'Interest prepayment')
 where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
-  and g2.ga2 is null
-group by t.bdate, t.branch, da1.dealID
+  and (
+     t.debitno like '70601________11%' -- PL_interest income
+  or t.debitno like '70606________31%' -- PL_Interest expenses
+  )
 ;
-
-
--- Credit Line
+-- *-db
 insert into odpp.events
-select 
-'IRE_CL'              as eventTrigger
-,d.key                as dealID
-,min(t.transactionid) as eventObject
-,min(struct(t.transactionid,t.amount)).col2 as amount
-,d.bdate
-,d.branch
-from odpp.transactions t 
-join odpp.deal_tmp2 d on d.bdate = t.bdate and d.branch = t.branch and nullif(t.expid_cr, d.expid) is null
-  and d.mainaccountid = t.creditid -- т.к. тут только кредитные линии, то accountingClass для счёта проверять не будем
-  and d.opendate = t.bdate
-  and d.productcategory = 'K3'
-where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
-group by d.bdate, d.branch, d.key
-;
-
-
--- Deposit
-insert into odpp.events
-select 
-'IRE_Deposit'         as eventTrigger
-,da1.dealID
-,min(t.transactionid) as eventObject
-,min(struct(t.transactionid,t.amount)).col2 as amount
+select
+case 
+when da.productClass in ('Deposit', 'Interbank deposit') then 'IA_DEP-db'
+else 'IA_LOA-db'  
+end                as eventTrigger
+,da.dealID
+,t.transactionid   as eventObject
+,t.amount
 ,t.bdate
 ,t.branch
-from odpp.transactions t 
-join odpp.deal_asset_acc_tmp da1 on da1.bdate = t.bdate and da1.branch = t.branch
-  and da1.accid = t.creditid 
-  and da1.productClass in ('Interbank deposit', 'Deposit')
-  and da1.accountingclass = 'Principal'
-join odpp.deal_tmp2 d on d.bdate = da1.bdate and d.branch = da1.branch and d.key = da1.dealid and nullif(t.expid_db, d.expid) is null
-  and d.opendate = t.bdate
-left join odpp_dict.ga_product g2 on t.bdate between g2.validfrom and g2.validto
-  and g2.ga2 =  substr(t.debitno,1,5)
-  and (g2.accountingClass in ('Interest accrued') or g2.accountingClass like 'PL%')
+from odpp.transactions t
+join odpp.deal_asset_acc_tmp da on da.bdate = t.bdate and da.branch = t.branch
+  and da.accid = t.debitid 
+  and da.productClass in ('Loan', 'Interbank loan', 'Deposit', 'Interbank deposit')
+  and da.accountingclass in ('Interest accrued', 'Interest prepayment')
 where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
-  and g2.ga2 is null
-group by t.bdate, t.branch, da1.dealID
+  and (
+     t.creditno like '70601________11%' -- PL_interest income
+  or t.creditno like '70606________31%' -- PL_Interest expenses
+  )
+;
+
+-- Cession-cr
+insert into odpp.events
+select
+'IA_LCS-cr'        as eventTrigger
+,da.dealID
+,t.transactionid   as eventObject
+,t.amount
+,t.bdate
+,t.branch
+from odpp.transactions t
+join odpp.deal_asset_acc_tmp da on da.bdate = t.bdate and da.branch = t.branch
+  and da.accid = t.creditid 
+  and da.productClass = 'Loan_Cession'
+  and da.accountingclass in ('Interest accrued', 'Interest prepayment', 'Principal')
+where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
+  and (
+     t.debitno like '70601________11%' -- PL_interest income
+  or t.debitno like '70606________31%' -- PL_Interest expenses
+  or t.debitno like '70606________34%' -- PL_Premium (assets)
+  )
+;
+
+-- Cession-db
+insert into odpp.events
+select
+'IA_LCS-db'        as eventTrigger
+,da.dealID
+,t.transactionid   as eventObject
+,t.amount
+,t.bdate
+,t.branch
+from odpp.transactions t
+join odpp.deal_asset_acc_tmp da on da.bdate = t.bdate and da.branch = t.branch
+  and da.accid = t.debitid 
+  and da.productClass = 'Loan_Cession'
+  and da.accountingclass in ('Interest accrued', 'Interest prepayment', 'Principal')
+where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
+  and (
+     t.creditno like '70601________11%' -- PL_interest income
+  or t.creditno like '70606________31%' -- PL_Interest expenses
+  or t.creditno like '70606________34%' -- PL_Premium (assets)
+  )
 ;
