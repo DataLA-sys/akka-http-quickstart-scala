@@ -1,32 +1,109 @@
+--
+-- события по транзакциям CL кредит
+--
 with
-t0 as (
+-- 1. проводка credit CL
+CL as (
 select
- rc.client_id
-,rc.bdate
-,rc.branch
-,r.rctid        as ATTR_RCT
-,r.ir           as ATTR_IRT
-,r.wlstat       as ATTR_WLS
-,if(substr(upper(r.edu),1,4) = 'IBFS', '1', '') as ATTR_EDU
-from odpp.rct_client rc
-join odpp.rct r on r.bdate = rc.bdate and r.branch = rc.branch and r.rctid = rc.rct_id and r.clid_rn = 1
-where rc.bdate in (DATE'${pbdate}',DATE'${bdate}') and rc.branch = '${branch}' and rc.client_rn = 1
+ da.bdate, da.branch, da.dealID, da.accID
+,sum(t.amount) amount
+,sum(t.amountne) amountNE
+  from odpp.deal_asset_acc_tmp da
+  join odpp.transactions t on t.bdate = da.bdate and t.branch = da.branch and t.creditid = da.accid
+ where da.bdate = DATE'${bdate}' and da.branch = '${branch}' 
+   and da.accountingclass in ('Credit Line')
+ group by da.bdate, da.branch, da.dealID, da.accID
 )
-,t1 as (
-select client_id, bdate, branch, attr, value
-from t0 lateral view explode(map('ATTR_RCT', ATTR_RCT, 'ATTR_IRT', ATTR_IRT, 'ATTR_WLS', ATTR_WLS, 'ATTR_EDU', ATTR_EDU)) upv as attr, value
+,TRA as (
+select 
+ d3.bdate
+,d3.branch
+,d3.key                     as dealID
+,max(d3.balanceequivalent)  as clAmount
+,sum(abs(coalesce(d2.nonoverdueprincipal, 0.0) + coalesce(d2.overdueprincipal, 0.0))) as trAmount
+  from odpp.deal_tmp2 d3
+  left join odpp.deal_tmp2 d2 on d2.facilityID = d3.srcdealid and d2.branch = d3.branch and d2.bdate = d3.bdate 
+where d3.branch = '${branch}' 
+   and d3.bdate in(DATE'${bdate}', DATE'${pbdate}')
+   and d3.productCategory = 'K3'
+ group by d3.bdate, d3.branch, d3.key
+)
+,EV as (
+select 
+ cl.bdate
+,cl.branch
+,cl.dealID
+,cl.amount
+,case 
+when d.isRevolving = '0' then 'CL_CHANGE'
+when d.isRevolving = '1' and (coalesce(tr0.clAmount,0.0) + coalesce(tr0.trAmount,0.0)) != (coalesce(tr1.clAmount,0.0) + coalesce(tr1.trAmount,0.0)) then 'CL_CHANGE'
+when d.isRevolving = '1' and (coalesce(tr0.clAmount,0.0) + coalesce(tr0.trAmount,0.0)) = (coalesce(tr1.clAmount,0.0) + coalesce(tr1.trAmount,0.0)) then 'CL_RECOV'
+end            as eventTrigger
+  from cl
+  join odpp.deal_tmp2 d on d.bdate = cl.bdate and d.branch = cl.branch and d.key = cl.dealID
+  join odpp.account_tmp a on a.bdate = cl.bdate and a.branch = cl.branch and a.key = cl.accID
+  left join TRA tr0 on tr0.dealID = d.key and tr0.branch = d.branch and tr0.bdate = d.bdate 
+  left join TRA tr1 on tr1.dealID = d.key and tr0.branch = d.branch and tr1.bdate < d.bdate
+ where 1=1
+   and (a.closed is null or a.closed >= a.bdate) -- счет CL открыт на начало дня
 )
 insert into odpp.events
-select
- c.attr     as eventTrigger
-,d.key      as dealID
-,d.clientid as eventObject
-,null       as amount
-,c.bdate
-,c.branch
-from t1 as c
-left join t1 pc on pc.client_id = c.client_id and pc.attr = c.attr and pc.branch = c.branch and pc.bdate = DATE'${pbdate}'
-join odpp.deal_tmp2 d on d.clientid = c.client_id and d.branch = c.branch and d.bdate = c.bdate
-where c.bdate = DATE'${bdate}'
-and coalesce(c.value,'') != coalesce(pc.value, '')
+select distinct eventtrigger, dealid, dealid, amount, bdate, branch 
+  from ev
+ where ev.eventtrigger is not null
 ;
+
+
+
+--
+-- события по транзакциям CL дебет
+--
+with
+-- 1. проводка debet CL
+CL as (
+select
+ da.bdate, da.branch, da.dealID, da.accID
+,sum(t.amount) amount
+,sum(t.amountne) amountNE
+  from odpp.deal_asset_acc_tmp da
+  join odpp.transactions t on t.bdate = da.bdate and t.branch = da.branch and t.debitid = da.accid
+ where da.bdate = DATE'${bdate}' and da.branch = '${branch}' 
+   and da.accountingclass in ('Credit Line')
+ group by da.bdate, da.branch, da.dealID, da.accID
+)
+-- 2. InitialRecognition по траншам CL
+,TR as (
+select
+ d.bdate, d.branch, d.facilityid
+,sum(t.amountne) amountNE
+  from odpp.deal_tmp2 d
+  join odpp.transactions t on t.bdate = d.bdate and t.branch = d.branch and nullif(t.expid_db,d.expid) is null 
+    and t.debitid = d.mainaccountid 
+  left join odpp_dict.ga_product g2 on g2.ga2 =  substr(t.creditno,1,5) and t.bdate between g2.validfrom and g2.validto
+ where d.bdate = DATE'${bdate}' and d.branch = '${branch}'
+   and d.productcategory = 'K2' and d.opendate = t.bdate
+   and g2.accountingClass not in ('Overdue') and g2.accountingClass not like 'PL%'
+ group by d.bdate, d.branch, d.facilityid
+)
+-- 3. уже почти события
+,EV as (
+select
+ cl.bdate
+,cl.branch
+,cl.dealID
+,cl.amount
+,case 
+when tr.amountNE = cl.amountNE then 'CL_USED'
+when cl.amountNE > coalesce(tr.amountNE,0) and (a.closed is not null and a.closed <= a.bdate) then 'CL_DEREC'
+when cl.amountNE > coalesce(tr.amountNE,0) and (a.closed is null or a.closed > a.bdate) then 'CL_CHANGE'
+end                  as eventTrigger
+  from cl
+  join odpp.deal_tmp2 d on d.bdate = cl.bdate and d.branch = cl.branch and d.key = cl.dealID
+  join odpp.account_tmp a on a.bdate = cl.bdate and a.branch = cl.branch and a.key = cl.accID
+  left join tr on tr.bdate = d.bdate and tr.branch = d.branch and tr.facilityID = d.srcdealID
+)  
+insert into odpp.events
+select distinct eventtrigger, dealid, dealid, amount, bdate, branch 
+  from ev
+ where ev.eventtrigger is not null
+;  
