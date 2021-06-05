@@ -1,42 +1,19 @@
-with
-t1 as (
-select 
- concat(cm.euabd,cm.euand,cm.euasd,cm.eudt1d) as expID
-,sum(ct.eumsu)                                as allocatedValue
-,cm.bdate    
-,cm.branch
- from odpp_bis.seuddy cm
- join odpp_bis.seuy ct on ct.bdate = cm.bdate and ct.branch = cm.branch and ct.euabo = cm.euabo and ct.euano = cm.euano and ct.euaso = cm.euaso
- join odpp.account_tmp a on a.bdate = cm.bdate and a.branch = cm.branch and a.sourceaccountid = concat(cm.euabo,cm.euano,cm.euaso) and a.activetype in ('RC','RE','RI')
-where cm.bdate = '${bdate}' and cm.branch = '${branch}'
-group by cm.bdate, cm.branch, cm.euabd,cm.euand,cm.euasd,cm.eudt1d
-)
-,t0 as (
-select 
- concat(cm.euabd,cm.euand,cm.euasd,cm.eudt1d) as expID
-,sum(ct.eumsu)                                as allocatedValue
-,cm.bdate    
-,cm.branch
- from odpp_bis.seuddy cm
- join odpp_bis.seuy ct on ct.bdate = cm.bdate and ct.branch = cm.branch and ct.euabo = cm.euabo and ct.euano = cm.euano and ct.euaso = cm.euaso
- join odpp.account_tmp a on a.bdate = cm.bdate and a.branch = cm.branch and a.sourceaccountid = concat(cm.euabo,cm.euano,cm.euaso) and a.activetype in ('RC','RE','RI')
-where cm.bdate = '${pbdate}' and cm.branch = '${branch}'
-group by cm.bdate, cm.branch, cm.euabd,cm.euand,cm.euasd,cm.eudt1d
-)
-,tx as (
-select coalesce(t1.expID, t0.expID) expID
-  from t1
-  full outer join t0 on t1.expID = t0.expID
- where coalesce(t1.allocatedValue,0) != coalesce(t0.allocatedValue,0)
-)
 insert into odpp.events
-select 
-'ATTR_CLTL'  as eventTrigger
-,d.key       as dealID
-,d.key       as eventObject
-,null        as amount
-,d.bdate
-,d.branch
-  from tx
-  join odpp.deal_tmp2 d on d.expid = tx.expid and d.bdate = '${bdate}' and d.branch = '${branch}' and d.descproductcodedevl like '%MORTGAGE%'
+select /*+ MAPJOIN(d1d, d1x, d0d, d0x) */
+'ATTR_DPD' as eventTrigger
+,t1.key    as dealID 
+,t1.key    as eventObject
+,null      as amount
+,t1.bdate
+,t1.branch
+  from odpp.deal_tmp2 t1
+  join odpp.deal_tmp2 t0 on t0.key = t1.key 
+  left join odpp_dict.dpd_bucket d1d on d1d.department = t1.department and t1.dpd between d1d.dpdFrom and coalesce(d1d.dpdTo,t1.dpd) and t1.bdate between d1d.validFrom and d1d.validTo  
+  left join odpp_dict.dpd_bucket d1x on d1x.department is null and t1.dpd between d1x.dpdFrom and coalesce(d1x.dpdTo,t1.dpd) and t1.bdate between d1x.validFrom and d1x.validTo  
+  left join odpp_dict.dpd_bucket d0d on d0d.department = t0.department and t0.dpd between d0d.dpdFrom and coalesce(d0d.dpdTo,t0.dpd) and t0.bdate between d0d.validFrom and d0d.validTo  
+  left join odpp_dict.dpd_bucket d0x on d0x.department is null and t0.dpd between d0x.dpdFrom and coalesce(d0x.dpdTo,t0.dpd) and t0.bdate between d0x.validFrom and d0x.validTo  
+ where t1.bdate = DATE'${bdate}' and t1.branch = '${branch}'
+   and t0.bdate = DATE'${pbdate}' and t0.branch = '${branch}'
+   and coalesce(t1.dpd,0) != coalesce(t0.dpd,0)
+   and coalesce(d1d.dpdFrom, d1x.dpdFrom, 0) != coalesce(d0d.dpdFrom, d0x.dpdFrom, 0)
 ;
