@@ -1,26 +1,70 @@
--- ODPP-872 - расчёт событий по флагу default_client.dflt_all_f, для ImpairmentRecovery удалено условие на остаток по счёту
-
-insert into odpp.events 
+-- Loan*
+insert into odpp.events
 select 
-case 
-when dc.dflt_all_f = '1' then 'DEF_DEAL'
-else 'DEF_DEAL_REC'
-end                     as eventTrigger
-,d.key                  as dealID
-,d.key                  as eventObject
-,cast(null as decimal)  as amount
+'IRE_Loan'            as eventTrigger
+,da1.dealID
+,min(t.transactionid) as eventObject
+,min(struct(t.transactionid,t.amount)).col2 as amount
+,t.bdate
+,t.branch
+from odpp.transactions t 
+join odpp.deal_asset_acc_tmp da1 on da1.bdate = t.bdate and da1.branch = t.branch
+  and da1.accid = t.debitid 
+  and da1.productClass in ('Loan', 'Interbank loan', 'Loan_Cession')
+  and case 
+  when da1.productClass != 'Loan_Cession' then da1.accountingclass = 'Principal'
+  else da1.accountingClass in ('Principal', 'Overdue')
+  end is true
+join odpp.deal_tmp2 d on d.bdate = da1.bdate and d.branch = da1.branch and d.key = da1.dealid and nullif(t.expid_db, d.expid) is null
+  and d.opendate = t.bdate
+left join odpp_dict.ga_product g2 on t.bdate between g2.validfrom and g2.validto
+  and g2.ga2 =  substr(t.creditno,1,5)
+  and (g2.accountingClass in ('Overdue') or g2.accountingClass like 'PL%')
+where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
+  and g2.ga2 is null
+group by t.bdate, t.branch, da1.dealID
+;
+
+
+-- Credit Line
+insert into odpp.events
+select 
+'IRE_CL'              as eventTrigger
+,d.key                as dealID
+,min(t.transactionid) as eventObject
+,min(struct(t.transactionid,t.amount)).col2 as amount
 ,d.bdate
 ,d.branch
-from odpp.deal_tmp2 d
-join odpp.account_tmp acc on acc.key = d.mainaccountid and acc.bdate = d.bdate and acc.branch = d.branch
-join odpp_dict.ga_product ga on ga.ga2 = substring(acc.accountno,1,5) and acc.bdate between ga.validfrom and ga.validto
-join odpp.default_client dc  on dc.clientid = d.clientid  and dc.branch = d.branch  and dc.bdate = d.bdate  
-join odpp.default_client pdc on pdc.clientid = d.clientid and pdc.branch = d.branch and pdc.bdate = '${pbdate}'
-where d.bdate = '${bdate}' and d.branch = '${branch}'
-and ga.productclass in ('Loan','Loan_Cession','Interbank loan')
-and ( 
-  (pdc.dflt_all_f = '0' and dc.dflt_all_f = '1')
-  or
-  (pdc.dflt_all_f = '1' and dc.dflt_all_f = '0')
-)
+from odpp.transactions t 
+join odpp.deal_tmp2 d on d.bdate = t.bdate and d.branch = t.branch and nullif(t.expid_cr, d.expid) is null
+  and d.mainaccountid = t.creditid -- т.к. тут только кредитные линии, то accountingClass для счёта проверять не будем
+  and d.opendate = t.bdate
+  and d.productcategory = 'K3'
+where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
+group by d.bdate, d.branch, d.key
+;
+
+
+-- Deposit
+insert into odpp.events
+select 
+'IRE_Deposit'         as eventTrigger
+,da1.dealID
+,min(t.transactionid) as eventObject
+,min(struct(t.transactionid,t.amount)).col2 as amount
+,t.bdate
+,t.branch
+from odpp.transactions t 
+join odpp.deal_asset_acc_tmp da1 on da1.bdate = t.bdate and da1.branch = t.branch
+  and da1.accid = t.creditid 
+  and da1.productClass in ('Interbank deposit', 'Deposit')
+  and da1.accountingclass = 'Principal'
+join odpp.deal_tmp2 d on d.bdate = da1.bdate and d.branch = da1.branch and d.key = da1.dealid and nullif(t.expid_db, d.expid) is null
+  and d.opendate = t.bdate
+left join odpp_dict.ga_product g2 on t.bdate between g2.validfrom and g2.validto
+  and g2.ga2 =  substr(t.debitno,1,5)
+  and (g2.accountingClass in ('Interest accrued') or g2.accountingClass like 'PL%')
+where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
+  and g2.ga2 is null
+group by t.bdate, t.branch, da1.dealID
 ;
