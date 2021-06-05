@@ -1,140 +1,119 @@
-with
-settings as (
-select 
-coalesce(max(struct(branch,cast(value as boolean))).col2,false) as isInitial
- from odpp_dict.settings
-where settings_key = 'acc_initial_loading'
-  and validFrom = DATE'${bdate}'
-  and nullif(branch,'${branch}') is null
-)
-,cf_deal as (
+-- ACC -> ABS part
+-- ODPP-718 - utm_dev.t_abs_transit_mart partitionong  - для ACC один batch_id для филиала за дату
+with 
+m0 as ( -- нормируем каждый тип мнемоники в свою колонку
 select
- d.contractid           as contractID
-,t.dueDate              as paymentDate
-,cast(t.typeID as int)  as cashFlowTypeid
-,t.includeEIR           as isIncludedInAmortizedCost
-,t.amount               as amount
-,t.currency             as currency
-,d.EventID              as eventID
-,d.bdate
-from odpp.cashflow t
-join odpp.deal_tmp2 dt on dt.key = t.dealid and dt.bdate = t.bdate and dt.branch = t.branch
-join odpp_acc.inevent_t d on d.contractid = dt.srcdealid and d.bdate = t.bdate and d.branch = t.branch
-cross join settings
-where t.bdate = '${bdate}' and t.branch = '${branch}'
-  and case when settings.isInitial then t.duedate > t.bdate else t.duedate >= t.bdate end -- ODPP-802 (initial) -- ODPP-446 (others)
+case
+  when t.debitmnemonic  like 'PL%' then t.debitmnemonic
+  when t.creditmnemonic like 'PL%' then t.creditmnemonic
+end                as utm_mm_PL0
+,case
+  when t.debitmnemonic  like 'EIR%' then t.debitmnemonic
+  when t.creditmnemonic like 'EIR%' then t.creditmnemonic
+end               as utm_mm_EIR0
+,case
+  when t.transactionTemplateID in (2,15)  then '4'
+  when t.transactionTemplateID in (11,16) then '5'
+  when ek.ifrscategory = 'AmortizedCost'  then '1'
+  when ek.ifrscategory = 'FVOCI'          then '2'
+  when ek.ifrscategory = 'FVPL'           then '3'
+end                as utm_mm_IFRS
+,da.productclass   as utm_productClass
+,da.accno          as utm_account
+,t.*
+from odpp_acc.outTransaction_t t
+join odpp.deal_tmp2 d on d.bdate = t.bdate and d.branch = t.branch and d.expid = t.contractid
+join odpp.deal_ekpp_tmp ek on ek.bdate = d.bdate and ek.branch = d.branch and ek.dealid = d.key
+join odpp.deal_asset_acc_tmp da on da.bdate = d.bdate and da.branch = d.branch and da.dealid = d.key and da.accID = d.mainaccountid
+where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
+  and t.destinationsystem = '1' -- система-назначения ABS. пока однозначно соответствует branch, но всё может измениться
 )
-,cf_costp as (
--- ODPP-492
--- комиссионные платежи в график 
-select 
- d.contractid   as contractID
-,d.bdate        as paymentDate
-,2              as cashFlowTypeid -- const
-,'1'            as isIncludedInAmortizedCost -- const
-,t.amount
-,tr.currency    as currency
-,d.EventID      as eventID
-,d.bdate
-from odpp.events t
-join odpp_dict.event_trigger et on et.code = t.eventtrigger and t.bdate between et.validfrom and et.validto
-join odpp.deal_tmp2 dt on dt.key = t.dealid and dt.bdate = t.bdate and dt.branch = t.branch
-join odpp_acc.inevent_t d on d.contractid = dt.srcdealid and d.bdate = dt.bdate and d.branch = dt.branch
-join odpp.transactions tr on tr.transactionID = t.eventObject and tr.bdate = t.bdate and tr.branch = t.branch
-join odpp.deal_asset_acc_tmp da on da.dealid = t.dealid and da.accid = tr.creditid and da.bdate = t.bdate and da.branch = t.branch
-where t.bdate = '${bdate}' and t.branch = '${branch}'
-  and et.eventtype = 'CommissionRecognition' 
-  and dt.srcmodule = 'BIS_LOA' -- только для BIS
-  and da.balance > 0 -- пассив. остаток на счёте CommissionP (условие на попадание в график)
-)
-,cf_costa as (
--- ODPP-492
--- затраты по сделке в график 
-select 
- d.contractid   as contractID
-,t.bdate        as paymentDate
-,4              as cashFlowTypeid -- const
-,'1'            as isIncludedInAmortizedCost -- const
-,t.amount
-,tr.currency    as currency
-,d.EventID      as eventID
-,t.bdate
-from odpp.events t
-join odpp_dict.event_trigger et on et.code = t.eventtrigger and t.bdate between et.validfrom and et.validto
-join odpp.deal_tmp2 dt on dt.key = t.dealid and dt.bdate = t.bdate and dt.branch = t.branch
-join odpp_acc.inevent_t d on d.contractid = dt.srcdealid and d.bdate = dt.bdate and d.branch = dt.branch
-join odpp.transactions tr on tr.transactionID = t.eventObject and tr.bdate = t.bdate and tr.branch = t.branch
-join odpp.deal_asset_acc_tmp da on da.dealid = t.dealid and da.accid = tr.debitid and da.bdate = t.bdate and da.branch = t.branch
-where t.bdate = '${bdate}' and t.branch = '${branch}'
-  and et.eventtype = 'CostRecognition'
-  and dt.srcmodule = 'BIS_LOA' -- только для BIS
-  and da.balance < 0 -- актив. остаток на счёте CostA (условие на попадание в график)
-)
-,cf_premium as (
--- ODPP-548 цессии - поток Premium
-select 
- t.contractID   as contractID
-,t.bdate        as paymentDate
-,5              as cashFlowTypeid -- const
-,'1'            as isIncludedInAmortizedCost -- const
-,(t.principal + coalesce(da.balance,0)) as amount -- актив с учётом знака - знак инвертируем
-,d.currency     as currency
-,t.EventID      as eventID
-,t.bdate
-from odpp.deal_tmp0 d
-join odpp.deal_asset_acc_tmp da on da.bdate = d.bdate and da.branch = d.branch and da.dealID = d.key
-join odpp_acc.incontract_t t on t.bdate = d.bdate and t.branch = d.branch and t.contractID = d.sourcedealID
-join odpp_acc.inevent_t e on e.bdate = d.bdate and e.branch = d.branch and e.eventid = t.eventid and e.eventtypeid = 7 -- event InitialRecognition или initial loading
-where d.bdate = '${bdate}' and d.branch = '${branch}'
-  and d.ddcat = 'CE'
-  and da.accountingclass = 'Principal'
-  and (t.principal + coalesce(da.balance,0)) != 0
-)
-,cf_initial as (
--- ODPP-550 - cashflow для первоначальной загрузки
-select 
- d.contractid
-,d.bdate            as paymentDate
-,case 
-when accountingclass='Interest accrued' then 3   
-when accountingclass='CommissionP' then 2
-when accountingclass='CostsA' then 4
-end                 as cashFlowTypeid
-,'1'                as isIncludedInAmortizedCost
-,sum(a.balance)     as amount
-,min(a.currency)    as currency
-,d.eventid
-,d.bdate
-from odpp_acc.inevent_t d
-join settings on isInitial -- только при первоначальной загрузке
-join odpp.deal_tmp2 dt on dt.srcdealid = d.contractid and dt.bdate = d.bdate and dt.branch = d.branch
-join odpp.deal_asset_acc_tmp a on a.dealid = dt.key and a.bdate = d.bdate and a.branch = d.branch and a.accountingclass in ('CommissionP','CostsA','Interest accrued')
-where d.bdate = '${bdate}' and d.branch = '${branch}'
-group by d.contractid, d.eventid, a.accountingclass, d.bdate
-having coalesce(sum(a.balance),0) != 0
-)
-,cf_total as (
-select * from cf_deal
-union all
-select * from cf_costa
-union all
-select * from cf_costp
-union all
-select * from cf_premium
-union all
-select * from cf_initial
-)
-insert overwrite table odpp_acc.incashflow_t partition(bdate='${bdate}', branch='${branch}')
+,m1 as (
 select
- cast(null as string)   as key
-,cast((date_format(t.bdate,'yyMMdd')||'05000000000') as bigint) + row_number() over(order by t.contractID)
-                        as CashFlowID
-,t.contractID
-,t.paymentDate
-,t.cashFlowTypeid
-,t.isIncludedInAmortizedCost
-,t.amount
-,if(t.currency='RUR','RUB',t.currency) as currency
-,t.eventid
-from cf_total t
+case
+  when t.utm_productClass in ('Interbank loan','Loan') then concat(t.utm_mm_EIR0,'_1')
+  when t.utm_productClass in ('Loan_Cession') and t.utm_account like '478%' then concat(t.utm_mm_EIR0,'_2') -- ODPP-797
+  when t.utm_productClass in ('Loan_Cession') then concat(t.utm_mm_EIR0,'_1')
+  else t.utm_mm_EIR0 -- e.productclass in ('Interbank deposit','Deposit')
+end                as utm_mm_EIR
+,case
+  when t.transactiontemplateid in (10,101,23) then translate(t.utm_mm_PL0,'()','')
+  when t.utm_mm_PL0 in ('PL_5_P','PL_5_A') then t.utm_mm_PL0
+  else concat_ws('_'
+    ,translate(t.utm_mm_PL0,'()','')
+    ,map(
+       '12',  ofr.ofr3_12
+      ,'13',  ofr.ofr3_13
+      ,'14',  ofr.ofr3_14
+      ,'21',  ofr.ofr3_21
+      ,'21R', ofr.ofr3_21_rev
+      ,'24',  ofr.ofr3_24
+      ,'32',  ofr.ofr3_32
+      ,'33',  ofr.ofr3_33
+      ,'35',  ofr.ofr3_35
+      ,'36',  ofr.ofr3_36
+      ,'41',  ofr.ofr3_41
+      ,'41R', ofr.ofr3_41_rev
+      ,'44',  ofr.ofr3_44
+     )[concat(substr(mask.accountmask,-2), if(upper(t.utm_mm_PL0) like '%REVAL%', 'R', ''))]
+     ,utm_mm_IFRS
+     )
+end                as utm_mm_PL
+,t.*
+from m0 t
+left join odpp_dict.accaccountmask mask on mask.producttype = t.utm_productClass and concat(mask.accountmaskmnemonic,'_',mask.isactive) = t.utm_mm_PL0
+left join odpp_dict.ga_product0    ofr  on ofr.accnum = substr(t.utm_account,1,5) and (ofr.ofr12 = substr(t.utm_account,14,2) or ofr.ofr12 is null) and t.bdate between ofr.validFrom and ofr.validTo -- TODO: check
+)
+insert overwrite table utm_dev.t_abs_transit_mart partition(business_date, branch_id, batch_id)
+select
+ cast(null as bigint)          as row_id
+,'ACC'                         as entry_sourcesystem_id
+,cast(t.id as int)             as acc_entry_id -- TODO: warn bigint -> int
+,'L'                           as acc_entry_status_id
+,current_timestamp             as acc_entry_status_datetime -- TODO: check current_date (by FS)
+,'ODPP'                        as acc_entry_status_source
+,cast(null as int)             as acc_entry_abs_id
+,cast(null as int)             as acc_entry_user_id
+,'ACC'                         as gto
+,cast(t.transactiondate as date) as acc_entry_date
+,t.transactiontemplateid       as transaction_template_id -- TODO: warn bigint -> int
+,round(t.amount,2)             as transaction_amount -- ODPP-632
+,t.eventdate                   as val_date
+,case
+   when t.currency = 'RUB' then 'RUR'
+   else t.currency
+ end                           as transaction_currency
+,round(t.amountrur,2)          as transaction_rub_amount -- ODPP-632
+,t.transactionnotation         as transaction_notation
+,case
+  when t.debitmnemonic  like 'EIR%' then t.utm_mm_EIR
+  when t.debitmnemonic  like 'PL%'  then t.utm_mm_PL
+  else t.debitmnemonic
+end                            as account_mask_mnemonic_d
+,t.debitaccountreference       as debit_account_nb
+,cast(null as string)          as acc_entry_debit_account_nb
+,cast(null as string)          as da_portfolio_id
+,t.contractid                  as da_contract_id
+,'ABS'                         as da_contract_sourcesystem
+,t.branch                      as da_branch
+,cast(null as string)          as d_psd
+,t.creditaccountreference      as credit_account_nb
+,cast(null as string)          as acc_entry_credit_account_nb
+,case
+  when t.creditmnemonic like 'EIR%' then t.utm_mm_EIR
+  when t.creditmnemonic like 'PL%'  then t.utm_mm_PL
+  else t.creditmnemonic
+end                            as account_mask_mnemonic_c
+,cast(null as string)          as ca_portfolio_id
+,t.contractid                  as ca_contract_id
+,'ABS'                         as ca_contract_sourcesystem
+,t.branch                      as ca_branch
+,cast(null as string)          as c_psd
+-- end of business fields, system fields below
+,t.bdate                       as business_date
+,t.branch                      as branch_id
+,t.packageID                   as batch_id
+from m1 t
+where 1=1
+  and round(t.amount,2) != 0 -- ODPP-632
 ;
