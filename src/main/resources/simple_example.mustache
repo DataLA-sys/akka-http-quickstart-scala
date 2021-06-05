@@ -1,5 +1,5 @@
--- ACC -> ABS part
--- ODPP-718 - utm_dev.t_abs_transit_mart partitionong  - для ACC один batch_id для филиала за дату
+-- ACC-BIS part
+-- ODPP-718 - utm_dev.t_bis_transit_mart partitionong  - для ACC один batch_id для филиала за дату
 with 
 m0 as ( -- нормируем каждый тип мнемоники в свою колонку
 select
@@ -26,7 +26,7 @@ join odpp.deal_tmp2 d on d.bdate = t.bdate and d.branch = t.branch and d.expid =
 join odpp.deal_ekpp_tmp ek on ek.bdate = d.bdate and ek.branch = d.branch and ek.dealid = d.key
 join odpp.deal_asset_acc_tmp da on da.bdate = d.bdate and da.branch = d.branch and da.dealid = d.key and da.accID = d.mainaccountid
 where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
-  and t.destinationsystem = '1' -- система-назначения ABS. пока однозначно соответствует branch, но всё может измениться
+  and t.destinationsystem = '2' -- система-назначения BIS. пока однозначно соответствует branch, но всё может измениться
 )
 ,m1 as (
 select
@@ -64,39 +64,57 @@ from m0 t
 left join odpp_dict.accaccountmask mask on mask.producttype = t.utm_productClass and concat(mask.accountmaskmnemonic,'_',mask.isactive) = t.utm_mm_PL0
 left join odpp_dict.ga_product0    ofr  on ofr.accnum = substr(t.utm_account,1,5) and (ofr.ofr12 = substr(t.utm_account,14,2) or ofr.ofr12 is null) and t.bdate between ofr.validFrom and ofr.validTo -- TODO: check
 )
-insert overwrite table utm_dev.t_abs_transit_mart partition(business_date, branch_id, batch_id)
+insert overwrite table utm_dev.t_bis_transit_mart partition(business_date, branch_id, batch_id) -- ODPP-718
 select
  cast(null as bigint)          as row_id
-,'ACC'                         as entry_sourcesystem_id
-,cast(t.id as int)             as acc_entry_id -- TODO: warn bigint -> int
-,'L'                           as acc_entry_status_id
-,current_timestamp             as acc_entry_status_datetime -- TODO: check current_date (by FS)
-,'ODPP'                        as acc_entry_status_source
-,cast(null as int)             as acc_entry_abs_id
-,cast(null as int)             as acc_entry_user_id
-,'ACC'                         as gto
-,cast(t.transactiondate as date) as acc_entry_date
-,t.transactiontemplateid       as transaction_template_id -- TODO: warn bigint -> int
-,round(t.amount,2)             as transaction_amount -- ODPP-632
-,t.eventdate                   as val_date
 ,case
-   when t.currency = 'RUB' then 'RUR'
-   else t.currency
- end                           as transaction_currency
-,round(t.amountrur,2)          as transaction_rub_amount -- ODPP-632
+when t.transactiontemplateid = 1311 then '13A'
+else lpad(t.transactiontemplateid, 3, '0')
+end                            as entry_sourcesystem_id -- ODPP-699
+,'2'                           as acc_entry_id -- const ODPP-572
+,'L'                           as acc_entry_status_id -- const ODPP-658
+,odpp.iso_date_to_bis(current_date) as acc_entry_status_date
+,cast(null as string)          as acc_entry_status_time
+,concat('IF', odpp.iso_date_to_bis(current_date), lpad(t.id, 7, '0'))   
+                               as acc_entry_bis_id
+,cast('$RSRV' as String)       as acc_entry_val_user_id
+,t.branch                      as branch
+,concat(branch, contractid)    as transaction_type_link_id
+,odpp.iso_date_to_bis(cast(t.transactiondate as date)) 
+                               as acc_entry_date
+,case
+when t.utm_productClass in ('Deposit','Interbank deposit') then 'ACD'
+else 'ACC'
+end                            as transaction_template_id  -- ODPP-699
+,cast(round(t.amount*100) as bigint) 
+                               as transaction_amount -- ODPP-632
+,case
+when t.currency = 'RUB' then 'RUR'
+else t.currency
+end                            as transaction_currency1
+,case
+when t.currency = 'RUB' then 'RUR'
+else t.currency
+end                            as transaction_currency2
+,cast(round(t.amountrur*100) as bigint) 
+                               as transaction_rub_amount -- ODPP-632
 ,t.transactionnotation         as transaction_notation
+,cast(null as string)          as da_status_date
+,cast(null as string)          as da_status_time
+,concat(t.debit_bisab,t.debit_bisan,t.debit_bisas)  
+                               as debit_account_id
+,cast(null as bigint)          as acc_entry_debit_account_id
 ,case
   when t.debitmnemonic  like 'EIR%' then t.utm_mm_EIR
   when t.debitmnemonic  like 'PL%'  then t.utm_mm_PL
   else t.debitmnemonic
 end                            as account_mask_mnemonic_d
-,t.debitaccountreference       as debit_account_nb
-,cast(null as string)          as acc_entry_debit_account_nb
+,t.debitaccountreference       as debit_account_nb   
+,cast(null as bigint)          as acc_entry_debit_account_nb
 ,cast(null as string)          as da_portfolio_id
-,t.contractid                  as da_contract_id
-,'ABS'                         as da_contract_sourcesystem
-,t.branch                      as da_branch
-,cast(null as string)          as d_psd
+,cast(null as string)          as d_psd 
+,cast(null as bigint)          as credit_account_id -- TODO: type mismatch - concat(credit_bisab,credit_bisan,credit_bisas)
+,cast(null as bigint)          as accentry_creditaccountid
 ,t.creditaccountreference      as credit_account_nb
 ,cast(null as string)          as acc_entry_credit_account_nb
 ,case
@@ -104,16 +122,26 @@ end                            as account_mask_mnemonic_d
   when t.creditmnemonic like 'PL%'  then t.utm_mm_PL
   else t.creditmnemonic
 end                            as account_mask_mnemonic_c
-,cast(null as string)          as ca_portfolio_id
-,t.contractid                  as ca_contract_id
-,'ABS'                         as ca_contract_sourcesystem
-,t.branch                      as ca_branch
+,cast(null as string)          as ca_portfolio_id 
 ,cast(null as string)          as c_psd
--- end of business fields, system fields below
+,'311'                         as acc_entry_code
+,cast(null as string)          as prerr
+,cast(null as string)          as prdtp
+,cast(null as string)          as prtmp
+,cast(null as string)          as prxfil
+,cast(null as string)          as prxdt
+,cast(null as string)          as prxnum
+,cast(null as string)          as prpod 
+,cast(null as string)          as prbrnm 
+,cast(null as string)          as prpbr
+,cast(null as string)          as prsqd
+,cast(null as string)          as prsqc
+,cast(null as string)          as prres
+--
 ,t.bdate                       as business_date
 ,t.branch                      as branch_id
-,t.packageID                   as batch_id
+,t.packageid                   as batch_id
 from m1 t
 where 1=1
-  and round(t.amount,2) != 0 -- ODPP-632
+  and round(t.amount*100) != 0 -- ODPP-632
 ;
