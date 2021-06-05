@@ -1,90 +1,65 @@
--- *-cr
+-- RestructuringNotcomm: Реструктуризация задолженности, связанная с изменением кредитного риска
 insert into odpp.events
-select
-case 
-when da.productClass in ('Deposit', 'Interbank deposit') then 'IA_DEP-cr'
-else 'IA_LOA-cr' 
-end                as eventTrigger
-,da.dealID
-,t.transactionid   as eventObject
-,t.amount
-,t.bdate
-,t.branch
-from odpp.transactions t
-join odpp.deal_asset_acc_tmp da on da.bdate = t.bdate and da.branch = t.branch
-  and da.accid = t.creditid 
-  and da.productClass in ('Loan', 'Interbank loan', 'Deposit', 'Interbank deposit')
-  and da.accountingclass in ('Interest accrued', 'Interest prepayment')
-where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
-  and (
-     t.debitno like '70601________11%' -- PL_interest income
-  or t.debitno like '70606________31%' -- PL_Interest expenses
-  )
-;
--- *-db
-insert into odpp.events
-select
-case 
-when da.productClass in ('Deposit', 'Interbank deposit') then 'IA_DEP-db'
-else 'IA_LOA-db'  
-end                as eventTrigger
-,da.dealID
-,t.transactionid   as eventObject
-,t.amount
-,t.bdate
-,t.branch
-from odpp.transactions t
-join odpp.deal_asset_acc_tmp da on da.bdate = t.bdate and da.branch = t.branch
-  and da.accid = t.debitid 
-  and da.productClass in ('Loan', 'Interbank loan', 'Deposit', 'Interbank deposit')
-  and da.accountingclass in ('Interest accrued', 'Interest prepayment')
-where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
-  and (
-     t.creditno like '70601________11%' -- PL_interest income
-  or t.creditno like '70606________31%' -- PL_Interest expenses
-  )
+select 
+'RESTRU_NOT_COM'    as eventTrigger
+,d.key              as dealID
+,d.key              as eventObject
+,null               as amount
+,d.bdate
+,d.branch 
+from odpp.deal_tmp2 d
+join odpp.account_tmp acc on (d.mainaccountid = acc.key and acc.bdate = d.bdate and acc.branch = d.branch)
+join odpp_dict.ga_product ga on (substring(acc.accountno,1,5) = ga.ga2 and d.bdate between ga.validfrom and ga.validto)
+  where 1=1
+  and d.bdate = '${bdate}'
+  and d.branch = '${branch}'
+  and d.forbearancedate = d.bdate
+  and ga.productclass in ('Loan','Loan_Cession')
 ;
 
--- Cession-cr
+
+-- RestructuringComm: Реструктуризация задолженности, не связанная с изменением кредитного риска
 insert into odpp.events
-select
-'IA_LCS-cr'        as eventTrigger
-,da.dealID
-,t.transactionid   as eventObject
-,t.amount
-,t.bdate
-,t.branch
-from odpp.transactions t
-join odpp.deal_asset_acc_tmp da on da.bdate = t.bdate and da.branch = t.branch
-  and da.accid = t.creditid 
-  and da.productClass = 'Loan_Cession'
-  and da.accountingclass in ('Interest accrued', 'Interest prepayment', 'Principal')
-where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
-  and (
-     t.debitno like '70601________11%' -- PL_interest income
-  or t.debitno like '70606________31%' -- PL_Interest expenses
-  or t.debitno like '70606________34%' -- PL_Premium (assets)
-  )
+select 
+'RESTRU_COM'    as eventTrigger
+,d.key          as dealID
+,d.key          as eventObject
+,null           as amount
+,d.bdate
+,d.branch
+from odpp.deal_ekpp_tmp de 
+join odpp.deal_tmp2 d        on d.key = de.dealid and d.bdate = de.bdate and d.branch = de.branch
+join odpp.account_tmp acc    on (d.mainaccountid = acc.key and acc.bdate = d.bdate and acc.branch = d.branch)
+join odpp_dict.ga_product ga on (substring(acc.accountno,1,5) = ga.ga2 and d.bdate between ga.validfrom and ga.validto)
+join odpp.deal_ekpp_tmp pde  on pde.dealid = d.key and pde.bdate = DATE'${pbdate}' and pde.branch = d.branch
+  where 1=1
+  and de.bdate = '${bdate}'
+  and de.branch = '${branch}'
+  and d.datarestru = de.bdate
+  and ga.productclass in ('Loan','Loan_Cession')
+  and de.isstraightline = pde.isstraightline
 ;
 
--- Cession-db
+
+-- RestructuringCommChangeCalc: Реструктуризация задолженности, не связанная с изменением кредитного риска (переход с линейного метода на ЭПС)
 insert into odpp.events
-select
-'IA_LCS-db'        as eventTrigger
-,da.dealID
-,t.transactionid   as eventObject
-,t.amount
-,t.bdate
-,t.branch
-from odpp.transactions t
-join odpp.deal_asset_acc_tmp da on da.bdate = t.bdate and da.branch = t.branch
-  and da.accid = t.debitid 
-  and da.productClass = 'Loan_Cession'
-  and da.accountingclass in ('Interest accrued', 'Interest prepayment', 'Principal')
-where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
-  and (
-     t.creditno like '70601________11%' -- PL_interest income
-  or t.creditno like '70606________31%' -- PL_Interest expenses
-  or t.creditno like '70606________34%' -- PL_Premium (assets)
-  )
+select 
+'RESTRU_COM_CC'    as eventTrigger
+,d.key          as dealID
+,d.key          as eventObject
+,null           as amount
+,d.bdate
+,d.branch
+from odpp.deal_ekpp_tmp de 
+join odpp.deal_tmp2 d on (de.dealid = d.key and de.bdate = d.bdate and de.branch = d.branch)
+join odpp.account_tmp acc on (d.mainaccountid = acc.key and acc.bdate = d.bdate and acc.branch = d.branch)
+join odpp_dict.ga_product ga on (substring(acc.accountno,1,5) = ga.ga2 and d.bdate between ga.validfrom and ga.validto)
+join odpp.deal_ekpp_tmp pde  on pde.dealid = d.key and pde.bdate = DATE'${pbdate}' and pde.branch = d.branch
+  where 1=1
+  and de.bdate = '${bdate}'
+  and de.branch = '${branch}'
+  and d.datarestru = de.bdate
+  and ga.productclass in ('Loan','Loan_Cession')
+  and pde.isstraightline = '1'
+  and de.isstraightline != '1'
 ;
