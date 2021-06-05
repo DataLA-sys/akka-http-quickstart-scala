@@ -1,34 +1,28 @@
--- Repayment (Overdue)
+-- WriteOff
 insert into odpp.events
 select 
-'REPAY_Overdue'    as eventTrigger
-,da1.dealID
-,t.transactionid   as eventObject
+'WO'             as eventTrigger
+,da1.dealID 
+,t.transactionid as eventObject
 ,t.amount
 ,t.bdate
 ,t.branch
 from odpp.transactions t 
 join odpp.deal_asset_acc_tmp da1 on da1.bdate = t.bdate and da1.branch = t.branch 
   and da1.accid = t.creditid 
-  and da1.productClass in ('Loan', 'Interbank loan', 'Loan_Cession')
-  and da1.accountingclass = 'Overdue' 
-join odpp.deal_tmp2 d on d.bdate = da1.bdate and d.branch = da1.branch and d.key = da1.dealID and nullif(t.expid_cr, d.expid) is null 
-left join odpp_dict.ga_product g2 on t.bdate between g2.validfrom and g2.validto
-  and g2.ga2 = substr(t.debitno,1,5)
-  and (
-  g2.accountingClass in ('Overdue','Provision') 
-  or g2.accountingClass like 'PL%'
-  or (da1.productClass = g2.productClass and g2.accountingclass = 'Principal')
-  or (da1.productClass != 'Loan_Cession' and g2.accountingClass = 'Cession')
-  )
+  and da1.productClass in ('Interbank loan', 'Loan', 'Loan_Cession')
+  and da1.accountingclass in ('Principal', 'Overdue') 
+join odpp.deal_tmp2 d on d.bdate = da1.bdate and d.branch = da1.branch and d.key = da1.dealid and nullif(t.expid_cr, d.expid) is null 
+join odpp_dict.ga_product g2 on t.bdate between g2.validfrom and g2.validto
+  and g2.ga2 = substr(t.debitno, 1, 5)
+  and (g2.accountingClass in ('Provision') or t.debitno like '70606________48606%')
 where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
-  and g2.ga2 is null
 ;
 
--- Repayment (Interest)
+-- Overdue
 insert into odpp.events
-select 
-'REPAY_Interest'    as eventTrigger
+select
+'OVE'              as eventTrigger
 ,da1.dealID
 ,t.transactionid   as eventObject
 ,t.amount
@@ -36,17 +30,55 @@ select
 ,t.branch
 from odpp.transactions t 
 join odpp.deal_asset_acc_tmp da1 on da1.bdate = t.bdate and da1.branch = t.branch 
-  and da1.accid = t.creditid 
-  and da1.productClass in ('Loan', 'Interbank loan', 'Loan_Cession')
-  and da1.accountingclass = 'Interest overdue' 
-join odpp.deal_tmp2 d on d.bdate = da1.bdate and d.branch = da1.branch and d.key = da1.dealID and nullif(t.expid_cr, d.expid) is null 
-left join odpp_dict.ga_product g2 on t.bdate between g2.validfrom and g2.validto
-  and g2.ga2 = substr(t.debitno,1,5)
+  and da1.accid = t.debitid 
+  and da1.productClass in ('Interbank loan', 'Loan', 'Loan_Cession')
+join odpp.deal_tmp2 d on d.bdate = da1.bdate and d.branch = da1.branch and d.key = da1.dealid and nullif(t.expid_db, d.expid) is null 
+join odpp_dict.ga_product g2 on t.bdate between g2.validfrom and g2.validto
+  and g2.ga2 = substr(t.creditno, 1, 5)
   and (
-  g2.accountingClass in ('Interest accrued', 'Interest overdue', 'Provision') 
-  or g2.accountingClass like 'PL%'
-  or (da1.productClass != 'Loan_Cession' and g2.accountingClass = 'Cession')
+    da1.accountingclass = 'Overdue' and g2.accountingClass in('Principal', 'CommissionA')
+    or da1.accountingclass = 'Interest overdue' and g2.accountingClass = 'Interest accrued'
   )
 where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
-  and g2.ga2 is null
 ;
+
+-- FOREX (cr)
+insert into odpp.events
+select
+'FRX-cr'           as eventTrigger
+,da1.dealID
+,t.transactionid   as eventObject
+,t.amount
+,t.bdate
+,t.branch
+from odpp.transactions t 
+join odpp.deal_asset_acc_tmp da1 on da1.bdate = t.bdate and da1.branch = t.branch
+  and da1.accid = t.creditid 
+  and da1.productClass in ('Deposit', 'Interbank loan', 'Interbank deposit', 'Loan', 'Loan_Cession')
+join odpp_dict.ga_product g2 on t.bdate between g2.validfrom and g2.validto
+  and g2.ga2 = substr(t.debitno, 1, 5)
+  and g2.accountingclass = 'PL_FOREX'
+join odpp.deal_tmp2 d on d.bdate = da1.bdate and d.branch = da1.branch and d.key = da1.dealid and nullif(t.expid_cr, d.expid) is null 
+where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
+;
+
+-- FOREX (db)
+insert into odpp.events
+select
+'FRX-cr'           as eventTrigger
+,da1.dealID
+,t.transactionid   as eventObject
+,t.amount
+,t.bdate
+,t.branch
+from odpp.transactions t 
+join odpp.deal_asset_acc_tmp da1 on da1.bdate = t.bdate and da1.branch = t.branch
+  and da1.accid = t.debitid 
+  and da1.productClass in ('Deposit', 'Interbank loan', 'Interbank deposit', 'Loan', 'Loan_Cession')
+join odpp_dict.ga_product g2 on t.bdate between g2.validfrom and g2.validto
+  and g2.ga2 = substr(t.creditno, 1, 5)
+  and g2.accountingclass = 'PL_FOREX'
+join odpp.deal_tmp2 d on d.bdate = da1.bdate and d.branch = da1.branch and d.key = da1.dealid and nullif(t.expid_db, d.expid) is null 
+where t.bdate = DATE'${bdate}' and t.branch = '${branch}'
+;
+
